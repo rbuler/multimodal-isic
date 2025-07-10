@@ -18,7 +18,7 @@ logging.basicConfig(level=logging.ERROR)
 warnings.filterwarnings('ignore')
 
 
-def filter_low_variance(train_df, test_df, threshold=1e-5):
+def filter_low_variance(train_df, test_df, threshold=1e-3):
     selector = VarianceThreshold(threshold)
     train_filtered = selector.fit_transform(train_df)
     test_filtered = selector.transform(test_df)
@@ -36,7 +36,7 @@ def lasso_select(train_df, y_train, test_df, C_values='auto'):
         Cs = np.logspace(-2, 1, 20)
     else:
         Cs = C_values
-    cv_strategy = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+    cv_strategy = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     model = LogisticRegressionCV(
         Cs=Cs,
@@ -90,6 +90,7 @@ num_features = len(rad_features_train.columns) // 4
 y_train = df_train['dx']
 
 print(f"Initial features: {rad_features_train.shape[1]}")
+# %%
 features_train, features_test = filter_low_variance(rad_features_train, rad_features_test)
 print(f"Features after variance filtering: {features_train.shape[1]}")
 

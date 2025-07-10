@@ -1,11 +1,5 @@
 neptune: False
 
-modality: 'image-radiomics-clinical' # 'image',
-                  # 'image-clinical',
-                  # 'image-clinical-radiomics',
-                  # 'image-clinical-radiomics-metalesion'
-
-
 seed: 42
 device: 'cuda:1'
 
@@ -29,7 +23,12 @@ model_path:       "/media/dysk_a/jr_buler/HAM10000/models"
 
 
 training_plan:
-  fusion: 'intermediate' # 'late', 'hybrid', 'intermediate'
+  modality: 'image-radiomics-clinical' # 'image',
+                  # 'image-clinical',
+                  # 'image-clinical-radiomics',
+                  # 'image-clinical-radiomics-metalesion'
+  fusion: 'attention'  # 'concat', 'weighted', 'attention'
+  fusion_level: 'intermediate' # 'late', 'intermediate'
   parameters:
     patience: 10
     epochs: 1
