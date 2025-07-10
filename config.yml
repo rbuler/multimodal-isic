@@ -1,0 +1,36 @@
+neptune: False
+
+modality: 'image-radiomics-clinical' # 'image',
+                  # 'image-clinical',
+                  # 'image-clinical-radiomics',
+                  # 'image-clinical-radiomics-metalesion'
+
+
+seed: 42
+device: 'cuda:1'
+
+dir:
+  csv:          "/media/dysk_a/jr_buler/HAM10000/train/HAM10000_metadata_new.csv"
+  img:          "/media/dysk_a/jr_buler/HAM10000/train/HAM10000_images"
+  seg:          "/media/dysk_a/jr_buler/HAM10000/train/HAM10000_segmentations"
+  radiomics:    "/media/dysk_a/jr_buler/HAM10000/train/radiomics_v01_25062025.pkl"
+  df:           "/media/dysk_a/jr_buler/HAM10000/train/df_v01_25062025.pkl"
+
+  csv_test:          "/media/dysk_a/jr_buler/HAM10000/test/ISIC2018_Task3_Test_GroundTruth_new.csv"
+  img_test:          "/media/dysk_a/jr_buler/HAM10000/test/ISIC2018_Task3_Test_Images"
+  seg_test:          "/media/dysk_a/jr_buler/HAM10000/test/ISIC2018_Task3_Test_Images_Segmentations_trained_on_HAM"
+  radiomics_test:    "/media/dysk_a/jr_buler/HAM10000/test/radiomics_v01_25062025.pkl"
+  df_test:           "/media/dysk_a/jr_buler/HAM10000/test/df_v01_25062025.pkl"
+
+
+
+model_path:       "/media/dysk_a/jr_buler/HAM10000/models"
+
+
+
+training_plan:
+  fusion: 'intermediate' # 'late', 'hybrid', 'intermediate'
+  parameters:
+    patience: 10
+    epochs: 1
+    fold: 1
