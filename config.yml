@@ -23,11 +23,8 @@ model_path:       "/media/dysk_a/jr_buler/HAM10000/models"
 
 
 training_plan:
-  modality: 'image-radiomics-clinical' # 'image',
-                  # 'image-clinical',
-                  # 'image-clinical-radiomics',
-                  # 'image-clinical-radiomics-metalesion'
-  fusion: 'attention'  # 'concat', 'weighted', 'attention'
+  modality: ['image', 'radiomics', 'clinical', 'artifacts']  # ['image', 'radiomics', 'clinical', 'artifacts']
+  fusion: 'concat'  # 'concat', 'weighted', 'attention'
   fusion_level: 'intermediate' # 'late', 'intermediate'
   parameters:
     patience: 10
