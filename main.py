@@ -63,14 +63,14 @@ torch.manual_seed(seed)
 torch.cuda.manual_seed(seed)
 device = config['device'] if torch.cuda.is_available() else 'cpu'
 # %%
-df_train = pd.read_pickle(config['dir']['df'])
+df_train_val = pd.read_pickle(config['dir']['df'])
 df_test = pd.read_pickle(config['dir']['df_test'])
 
-with open(config['dir']['radiomics'], 'rb') as f:
-    pickle_train = pickle.load(f)
+# with open(config['dir']['radiomics'], 'rb') as f:
+#     pickle_train = pickle.load(f)
 
-with open(config['dir']['radiomics_test'], 'rb') as f:
-    pickle_test = pickle.load(f)
+# with open(config['dir']['radiomics_test'], 'rb') as f:
+#     pickle_test = pickle.load(f)
 
 # %%
 train_transform = A.Compose([
@@ -98,24 +98,24 @@ if run:
     run['train/splits'] = SPLITS
 
 kf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=seed)
-folds = list(kf.split(df_train, df_train['dx']))
+folds = list(kf.split(df_train_val, df_train_val['dx']))
 
 for fold_idx, (train_idx, val_idx) in enumerate(folds):
     if fold_idx != current_fold:
         continue
     train_idx, val_idx = folds[current_fold]
-    df_train = df_train.iloc[train_idx]
-    df_val = df_train.iloc[val_idx]
-    pickle_train = pickle_train.iloc[train_idx]
-    pickle_val = pickle_train.iloc[val_idx]
+    df_train = df_train_val.iloc[train_idx]
+    df_val = df_train_val.iloc[val_idx]
+    # pickle_train = pickle_train.iloc[train_idx]
+    # pickle_val = pickle_train.iloc[val_idx]
     print(f"Train set size: {len(df_train)}")
     print(f"Val set size: {len(df_val)}")
     print(f"Test set size: {len(df_test)}")
 
 # %%
-train_dataset = DermDataset(df=df_train, radiomics=pickle_train, transform=train_transform, is_train=True)
-val_dataset = DermDataset(df=df_val, radiomics=pickle_val, transform=valid_transform, is_train=False)
-test_dataset = DermDataset(df=df_test, radiomics=pickle_test, transform=valid_transform, is_train=False)
+train_dataset = DermDataset(df=df_train, radiomics=None, transform=train_transform, is_train=True)
+val_dataset = DermDataset(df=df_val, radiomics=None, transform=valid_transform, is_train=False)
+test_dataset = DermDataset(df=df_test, radiomics=None, transform=valid_transform, is_train=False)
 # %%
 train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
@@ -128,7 +128,7 @@ dataloaders = {'train': train_loader,
 modality = config['training_plan']['modality']
 fusion = config['training_plan']['fusion']
 fusion_level = config['training_plan']['fusion_level']
-model = MultiModalFusionNet(modality=modality, fusion=fusion, fusion_level=fusion_level, device=device)
+model = MultiModalFusionNet(modality=modality, fusion_level=fusion_level, fusion_strategy=fusion)
 # model.apply(deactivate_batchnorm)
 model.to(device)
 criterion = torch.nn.CrossEntropyLoss()
@@ -153,7 +153,7 @@ if run is not None:
     run["best_model_path"].log(model_name)
 
 
-model = MultiModalFusionNet(modality=modality, fusion=fusion, device=device)
+model = MultiModalFusionNet(modality=modality, fusion_level=fusion_level, fusion_strategy=fusion)
 # model.apply(deactivate_batchnorm)
 model.load_state_dict(torch.load(model_name))
 model.to(device)
