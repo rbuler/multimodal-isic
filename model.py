@@ -204,6 +204,5 @@ class MultiModalFusionNet(nn.Module):
                 norm_weights = F.softmax(self.weights, dim=0)
                 fused_logits = torch.stack([w * z for w, z in zip(norm_weights, logits)], dim=0).sum(dim=0)
             elif self.fusion_strategy == 'attention':
-                # TODO fix
                 fused_logits = self.attention(logits)
             return fused_logits
