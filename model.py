@@ -62,44 +62,44 @@ class MultiModalFusionNet(nn.Module):
         
         self.image_proj = nn.Sequential(
             nn.Linear(1536, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(256, self.shared_dim),
-            nn.BatchNorm1d(self.shared_dim),
+            nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
             nn.Dropout(0.2)
         )
 
         self.radiomics_mlp = nn.Sequential(
             nn.Linear(radiomics_dim, 256),
-            nn.BatchNorm1d(256),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(256, self.shared_dim),
-            nn.BatchNorm1d(self.shared_dim),
+            nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
-            nn.Dropout(0.3)
+            nn.Dropout(0.2)
         )
 
         self.clinical_mlp = nn.Sequential(
             nn.Linear(13, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(64, self.shared_dim),
-            nn.BatchNorm1d(self.shared_dim),
+            nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
             nn.Dropout(0.2)
         )
 
         self.artifact_mlp = nn.Sequential(
             nn.Linear(12, 64),
-            nn.BatchNorm1d(64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(0.2),
             nn.Linear(64, self.shared_dim),
-            nn.BatchNorm1d(self.shared_dim),
+            nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
             nn.Dropout(0.2)
         )
@@ -146,14 +146,7 @@ class MultiModalFusionNet(nn.Module):
 
         elif fusion_level == 'late':
             if fusion_strategy == 'concat':
-
-                # TODO
-                # remove or change fusion mlp for late
-                self.fusion_mlp = nn.Sequential(
-                    nn.Linear(len(modality) * num_classes, 128),
-                    nn.ReLU(),
-                    nn.Linear(128, num_classes)
-                )
+                pass
             elif fusion_strategy == 'weighted':
                 self.weights = nn.Parameter(torch.ones(len(modality)) / len(modality))
             elif fusion_strategy == 'attention':
@@ -166,7 +159,7 @@ class MultiModalFusionNet(nn.Module):
             if 'radiomics' in modality:
                 self.modality_heads['radiomics'] = nn.Linear(self.shared_dim, num_classes)
             if 'clinical' in modality:
-                self.modality_heads['clinical'] nn.Linear(self.shared_dim, num_classes)
+                self.modality_heads['clinical'] = nn.Linear(self.shared_dim, num_classes)
             if 'artifacts' in modality:
                 self.modality_heads['artifacts'] = nn.Linear(self.shared_dim, num_classes)
 
@@ -218,7 +211,7 @@ class MultiModalFusionNet(nn.Module):
                 weighted_features = [w * f for w, f in zip(norm_weights, features)]
                 fused = torch.cat(weighted_features, dim=1)  # (B, 128 128 128 128)
             elif self.fusion_strategy == 'attention':
-                features = [self.projections[m](f) for m, f in zip(self.modality, features)]
+                # features = [self.projections[m](f) for m, f in zip(self.modality, features)]
                 fused = self.attention(features)
             return self.fusion_mlp(fused)
 
