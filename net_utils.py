@@ -1,6 +1,6 @@
 import torch
 import copy
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, balanced_accuracy_score
 
 
 def train(model, dataloader, criterion, optimizer, device, neptune_run, epoch):
@@ -37,6 +37,10 @@ def train(model, dataloader, criterion, optimizer, device, neptune_run, epoch):
     if neptune_run is not None:
         neptune_run["train/epoch_loss"].log(epoch_loss)
         neptune_run["train/epoch_acc"].log(epoch_acc)
+        if hasattr(model, "weights"):
+            fusion_weights = model.weights.detach().cpu().numpy().tolist()
+            for i, w in enumerate(fusion_weights):
+                neptune_run[f"model/fusion_weight_modality_{i}"].log(w)
     print(f"Epoch {epoch} - Train Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.4f}")
 
 
@@ -104,15 +108,19 @@ def test(model, dataloader, device, neptune_run, fold_idx=None):
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(target.cpu().numpy())
     test_acc = correct / total
+    balanced_acc = balanced_accuracy_score(all_targets, all_preds)
     report = classification_report(all_targets, all_preds)
     if not fold_idx:
         if neptune_run is not None:
             neptune_run["test/accuracy"].log(test_acc)
             neptune_run["test/classification_report"].log(report)
+            neptune_run["test/balanced_accuracy"].log(balanced_acc)
+
     else:
         if neptune_run is not None:
             neptune_run[f"{fold_idx}/test/accuracy"].log(test_acc)
             neptune_run[f"{fold_idx}/test/classification_report"].log(report)
+            neptune_run[f"{fold_idx}/test/balanced_accuracy"].log(balanced_acc)
 
     print(f"Test Accuracy: {test_acc:.4f}")
     print("Classification Report:\n", report)
