@@ -8,7 +8,7 @@ import torchvision.transforms as T
 class DermDataset(Dataset):
     def __init__(self, df, radiomics, transform=None, is_train=True, crop_size=450):
         self.df = df
-        self.radiomics = radiomics
+        # self.radiomics = radiomics
         self.transform = transform
         self.is_train = is_train
         self.crop_size = crop_size
@@ -19,14 +19,13 @@ class DermDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
-        radiomic_features = self.radiomics.iloc[idx]
+        # radiomic_features = self.radiomics.iloc[idx]
 
         cropped_image, cropped_mask = self.preprocess_image_and_mask(
             row['image_path'], row['segmentation_path'], self.crop_size
         )
-
+        cropped_image = np.array(cropped_image).astype(np.uint8)
         if self.transform:
-            cropped_image = np.array(cropped_image)
             augmented = self.transform(image=cropped_image)
             cropped_image = augmented['image']
         else:
@@ -36,7 +35,8 @@ class DermDataset(Dataset):
         sex = torch.tensor(row['sex_encoded'], dtype=torch.long)
         loc = torch.tensor(row['loc_encoded'], dtype=torch.long)
         artifacts = torch.tensor(row[self.artifact_cols].values.astype(int), dtype=torch.long)
-        radiomic_features = torch.tensor(radiomic_features.values, dtype=torch.float)
+        # radiomic_features = torch.tensor(radiomic_features.values, dtype=torch.float)
+        radiomic_features = torch.zeros(102, dtype=torch.float)
         target = torch.tensor(row['dx'], dtype=torch.long)
 
         return {
