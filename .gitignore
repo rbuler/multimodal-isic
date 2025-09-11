@@ -3,3 +3,4 @@ __pycache__/
 .venv
 .vscode
 /ConvMAE/
+best_ae_model_cuda*.pth
