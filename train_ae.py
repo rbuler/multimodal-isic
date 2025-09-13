@@ -109,15 +109,11 @@ optimizer = torch.optim.AdamW([
     {'params': decoder_params, 'lr': decoder_lr}
 ], betas=(0.9, 0.95), weight_decay=0.05)
 
-mask_ratio = 0.5
-
-
-
-
 # scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
 # scheduler.step()
 scheduler = None
 
+mask_ratio = 0.5
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
 best_val_loss=float('inf')
@@ -152,56 +148,57 @@ for epoch in range(num_epochs):
     if config["neptune"]:
         run["train/loss"].append(train_loss)
         run["val/loss"].append(val_loss)
+        
+        if epoch % 10 == 0 or epoch == num_epochs - 1:
+            with torch.no_grad():
+                batch = next(iter(val_loader))
+                for i in range(4):
+                    img = batch['image'][i:i+1].to(device)
+                    loss, pred, mask = ae_model(img, mask_ratio=mask_ratio)
+                    recon = ae_model.unpatchify(pred) if hasattr(ae_model, 'unpatchify') else pred
+                    img_vis = img.squeeze().cpu().numpy().transpose(1, 2, 0)
+                    recon_vis = recon.squeeze().cpu().numpy().transpose(1, 2, 0)
+                    mask_vis = mask.cpu().numpy()
+                    
+                    image_patches = ae_model.patchify(img).cpu().numpy() if hasattr(ae_model, 'patchify') else img.cpu().numpy()
+                    # mask_vis: (1, 196), image_patches: (1, 196, 768)
+                    mask_expanded = mask_vis[..., None]  # (1, 196, 1)
+                    unmasked_patches = image_patches * (1 - mask_expanded)
+                    binary_patches = mask_expanded * np.ones_like(image_patches)  # (1, 196, 768) of 0/1
+                    binary_image = ae_model.unpatchify(torch.tensor(binary_patches, device=device)).cpu().numpy()
 
-        with torch.no_grad():
-            batch = next(iter(val_loader))
-            for i in range(4):
-                img = batch['image'][i:i+1].to(device)
-                loss, pred, mask = ae_model(img, mask_ratio=mask_ratio)
-                recon = ae_model.unpatchify(pred) if hasattr(ae_model, 'unpatchify') else pred
-                img_vis = img.squeeze().cpu().numpy().transpose(1, 2, 0)
-                recon_vis = recon.squeeze().cpu().numpy().transpose(1, 2, 0)
-                mask_vis = mask.cpu().numpy()
+                    
+                    img_vis = img_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+                    recon_vis = recon_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+                    
+                    binary_image_vis = binary_image.squeeze().transpose(1, 2, 0)
+                    overlay_vis = recon_vis * (1 - binary_image_vis) + img_vis * binary_image_vis
                 
-                image_patches = ae_model.patchify(img).cpu().numpy() if hasattr(ae_model, 'patchify') else img.cpu().numpy()
-                # mask_vis: (1, 196), image_patches: (1, 196, 768)
-                mask_expanded = mask_vis[..., None]  # (1, 196, 1)
-                unmasked_patches = image_patches * (1 - mask_expanded)
-                binary_patches = mask_expanded * np.ones_like(image_patches)  # (1, 196, 768) of 0/1
-                binary_image = ae_model.unpatchify(torch.tensor(binary_patches, device=device)).cpu().numpy()
+                    img_vis = np.clip(img_vis, 0, 1)
+                    binary_image_vis = np.clip(binary_image_vis, 0, 1)
+                    recon_vis = np.clip(recon_vis, 0, 1)
+                    overlay_vis = np.clip(overlay_vis, 0, 1)
 
-                
-                img_vis = img_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                recon_vis = recon_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                
-                binary_image_vis = binary_image.squeeze().transpose(1, 2, 0)
-                overlay_vis = recon_vis * (1 - binary_image_vis) + img_vis * binary_image_vis
-            
-                img_vis = np.clip(img_vis, 0, 1)
-                binary_image_vis = np.clip(binary_image_vis, 0, 1)
-                recon_vis = np.clip(recon_vis, 0, 1)
-                overlay_vis = np.clip(overlay_vis, 0, 1)
+                    fig, axs = plt.subplots(1, 4, figsize=(16, 4))
+                    axs[0].imshow(img_vis)
+                    axs[0].set_title("Original")
+                    axs[0].axis('off')
+                    axs[1].imshow(binary_image_vis, cmap='gray')
+                    axs[1].set_title("Mask")
+                    axs[1].axis('off')
+                    axs[2].imshow(recon_vis)
+                    axs[2].set_title("Reconstruction")
+                    axs[2].axis('off')
+                    axs[3].imshow(overlay_vis)
+                    axs[3].set_title("Overlay")
+                    axs[3].axis('off')
 
-                fig, axs = plt.subplots(1, 4, figsize=(16, 4))
-                axs[0].imshow(img_vis)
-                axs[0].set_title("Original")
-                axs[0].axis('off')
-                axs[1].imshow(binary_image_vis, cmap='gray')
-                axs[1].set_title("Mask")
-                axs[1].axis('off')
-                axs[2].imshow(recon_vis)
-                axs[2].set_title("Reconstruction")
-                axs[2].axis('off')
-                axs[3].imshow(overlay_vis)
-                axs[3].set_title("Overlay")
-                axs[3].axis('off')
-
-                plt.tight_layout()
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png')
-                buf.seek(0)
-                run[f"visuals/image_comparison_{i+1}"].append(neptune.types.File.from_content(buf.getvalue(), extension='png'))
-                plt.close(fig)
+                    plt.tight_layout()
+                    buf = io.BytesIO()
+                    plt.savefig(buf, format='png')
+                    buf.seek(0)
+                    run[f"visuals/image_comparison_{i+1}"].append(neptune.types.File.from_content(buf.getvalue(), extension='png'))
+                    plt.close(fig)
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
