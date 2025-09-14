@@ -59,13 +59,18 @@ device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 df_train_val = pd.read_pickle(config['dir']['df'])
 df_test = pd.read_pickle(config['dir']['df_test'])
 
-train_transform = A.Compose([A.Resize(224,224), A.HorizontalFlip(p=0.5), A.VerticalFlip(p=0.5),
-                             A.RandomRotate90(p=0.5), A.ShiftScaleRotate(shift_limit=0.05, scale_limit=0.1, rotate_limit=15, p=0.5),
-                             A.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1, p=0.5),
-                            #  A.GaussNoise(var_limit=(10.0,50.0), p=0.3),
-                             A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
-                            #  A.Normalize(mean=(0, 0, 0), std=(1, 1, 1), max_pixel_value=255.0),
-                             ToTensorV2()])
+train_transform = A.Compose([
+    A.Resize(224,224),
+    A.HorizontalFlip(p=0.5),
+    A.VerticalFlip(p=0.5),
+    A.RandomRotate90(p=0.5),
+    A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.05, p=0.3),
+    A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=5, val_shift_limit=5, p=0.3),
+    A.GaussianBlur(blur_limit=(3,7), sigma_limit=0.1, p=0.2),
+    A.GaussNoise(std_range=(0.03, 0.03), mean_range=(0.0, 0.0), per_channel=True, noise_scale_factor=1.0, p=0.2),
+    A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
+    ToTensorV2(),
+])
 
 valid_transform = A.Compose([A.Resize(224,224),
                              A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
@@ -113,7 +118,7 @@ optimizer = torch.optim.AdamW([
 # scheduler.step()
 scheduler = None
 
-mask_ratio = 0.5
+mask_ratio = 0.25
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
 best_val_loss=float('inf')
@@ -172,7 +177,7 @@ for epoch in range(num_epochs):
                     recon_vis = recon_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
                     
                     binary_image_vis = binary_image.squeeze().transpose(1, 2, 0)
-                    overlay_vis = recon_vis * (1 - binary_image_vis) + img_vis * binary_image_vis
+                    overlay_vis = recon_vis * binary_image_vis + img_vis * (1 - binary_image_vis)
                 
                     img_vis = np.clip(img_vis, 0, 1)
                     binary_image_vis = np.clip(binary_image_vis, 0, 1)
