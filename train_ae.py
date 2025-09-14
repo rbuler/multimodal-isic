@@ -118,7 +118,9 @@ optimizer = torch.optim.AdamW([
 # scheduler.step()
 scheduler = None
 
-mask_ratio = 0.25
+mask_ratio = 0.75
+include_lesion_mask = True
+
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
 best_val_loss=float('inf')
@@ -129,9 +131,12 @@ for epoch in range(num_epochs):
     ae_model.train()
     running_loss = 0.0
     for batch in train_loader:
-        images = batch['image'].to(device)
         optimizer.zero_grad()
-        loss, pred, mask = ae_model(images, mask_ratio=mask_ratio)
+        
+        images = batch['image'].to(device)
+        lesion_mask = batch['mask'].to(device).unsqueeze(1) if include_lesion_mask else None
+
+        loss, pred, mask = ae_model(images, mask_ratio=mask_ratio, lesion_mask=lesion_mask)
         loss.backward()
         optimizer.step()
         running_loss += loss.item() * images.size(0)

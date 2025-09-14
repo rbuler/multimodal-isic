@@ -25,12 +25,14 @@ class DermDataset(Dataset):
             row['image_path'], row['segmentation_path'], self.crop_size
         )
         cropped_image = np.array(cropped_image).astype(np.uint8)
+        cropped_mask = np.array(cropped_mask).astype(np.uint8)
         if self.transform:
-            augmented = self.transform(image=cropped_image)
+            augmented = self.transform(image=cropped_image, mask=cropped_mask)
             cropped_image = augmented['image']
+            cropped_mask = augmented['mask']
         else:
             cropped_image = T.ToTensor()(cropped_image)
-        
+            cropped_mask = T.ToTensor()(cropped_mask)
         age = torch.tensor(row['age_normalized'], dtype=torch.float)
         sex = torch.tensor(row['sex_encoded'], dtype=torch.long)
         loc = torch.tensor(row['loc_encoded'], dtype=torch.long)
@@ -41,7 +43,7 @@ class DermDataset(Dataset):
 
         return {
             'image': cropped_image,
-            'mask': T.ToTensor()(cropped_mask),
+            'mask': cropped_mask,
             'radiomics': radiomic_features,
             'age': age,
             'sex': sex,
