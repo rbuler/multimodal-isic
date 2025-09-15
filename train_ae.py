@@ -171,10 +171,9 @@ for epoch in range(num_epochs):
                     mask_vis = mask.cpu().numpy()
                     
                     image_patches = ae_model.patchify(img).cpu().numpy() if hasattr(ae_model, 'patchify') else img.cpu().numpy()
-                    # mask_vis: (1, 196), image_patches: (1, 196, 768)
-                    mask_expanded = mask_vis[..., None]  # (1, 196, 1)
+                    mask_expanded = mask_vis[..., None]
                     unmasked_patches = image_patches * (1 - mask_expanded)
-                    binary_patches = mask_expanded * np.ones_like(image_patches)  # (1, 196, 768) of 0/1
+                    binary_patches = mask_expanded * np.ones_like(image_patches)
                     binary_image = ae_model.unpatchify(torch.tensor(binary_patches, device=device)).cpu().numpy()
 
                     
