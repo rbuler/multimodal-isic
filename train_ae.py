@@ -96,7 +96,9 @@ train_loader = DataLoader(train_dataset, batch_size=config['training_plan']['par
 val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-ae_model = convmae_convvit_base_patch16_dec512d8b()
+norm_pix_loss = config['training_plan']['parameters']['norm_pix_loss']
+
+ae_model = convmae_convvit_base_patch16_dec512d8b(norm_pix_loss=norm_pix_loss)
 ae_model = ae_model.to(device)
 root = os.getcwd()
 checkpoint_path = os.path.join(root, "ConvMAE", "checkpoint.pth")
