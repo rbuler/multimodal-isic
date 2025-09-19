@@ -4,3 +4,4 @@ __pycache__/
 .vscode
 /ConvMAE/
 best_ae_model_cuda*.pth
+/models
