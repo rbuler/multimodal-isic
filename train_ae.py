@@ -1,5 +1,6 @@
 # %%
 import os
+import copy
 import torch
 import yaml
 import uuid
@@ -61,13 +62,14 @@ df_test = pd.read_pickle(config['dir']['df_test'])
 
 train_transform = A.Compose([
     A.Resize(224,224),
+    A.RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.33), p=1.0),
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
     A.RandomRotate90(p=0.5),
-    A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.05, p=0.3),
-    A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=5, val_shift_limit=5, p=0.3),
-    A.GaussianBlur(blur_limit=(3,7), sigma_limit=0.1, p=0.2),
-    A.GaussNoise(std_range=(0.03, 0.03), mean_range=(0.0, 0.0), per_channel=True, noise_scale_factor=1.0, p=0.2),
+    # A.RandomBrightnessContrast(brightness_limit=0.05, contrast_limit=0.05, p=0.3),
+    # A.HueSaturationValue(hue_shift_limit=5, sat_shift_limit=5, val_shift_limit=5, p=0.3),
+    # A.GaussianBlur(blur_limit=(3,7), sigma_limit=0.1, p=0.2),
+    # A.GaussNoise(std_range=(0.03, 0.03), mean_range=(0.0, 0.0), per_channel=True, noise_scale_factor=1.0, p=0.2),
     A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
     ToTensorV2(),
 ])
@@ -120,8 +122,8 @@ optimizer = torch.optim.AdamW([
 # scheduler.step()
 scheduler = None
 
-mask_ratio = 0.75
-include_lesion_mask = True
+mask_ratio = config['training_plan']['parameters']['masking_ratio']
+include_lesion_mask = False
 
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
@@ -213,7 +215,7 @@ for epoch in range(num_epochs):
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
-        best_model_state = ae_model.state_dict()
+        best_model_state = copy.deepcopy(ae_model.state_dict())
 
     if epoch == num_epochs - 1:
         model_dir = os.path.join(root, "models")
