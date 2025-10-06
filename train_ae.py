@@ -223,6 +223,8 @@ for epoch in range(num_epochs):
         model_path = os.path.join(model_dir, f"{uuid.uuid4().hex}.pth")
         torch.save(best_model_state, model_path)
         print(f"Saved Best Model at {model_path}")
+        run["best_model_path"].log(model_path) if config["neptune"] else None
+
 
 # %%
 
