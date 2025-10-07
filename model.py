@@ -62,9 +62,9 @@ class MultiModalFusionNet(nn.Module):
         
         self.image_proj = nn.Sequential(
             nn.Linear(1536, 256),
-            nn.LayerNorm(self.shared_dim),
+            nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Dropout(0.2),
+            nn.Dropout(0.3),
             nn.Linear(256, self.shared_dim),
             nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
@@ -75,11 +75,11 @@ class MultiModalFusionNet(nn.Module):
             nn.Linear(radiomics_dim, 256),
             nn.LayerNorm(256),
             nn.ReLU(),
-            nn.Dropout(0.3),
+            nn.Dropout(0.4),
             nn.Linear(256, self.shared_dim),
             nn.LayerNorm(self.shared_dim),
             nn.ReLU(),
-            nn.Dropout(0.2)
+            nn.Dropout(0.3)
         )
 
         self.clinical_mlp = nn.Sequential(
