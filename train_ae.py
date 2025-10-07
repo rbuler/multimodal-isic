@@ -123,6 +123,7 @@ optimizer = torch.optim.AdamW([
 scheduler = None
 
 mask_ratio = config['training_plan']['parameters']['masking_ratio']
+eval_mask_ratio = config['training_plan']['parameters']['eval_masking_ratio']
 include_lesion_mask = False
 
 # %%
@@ -151,7 +152,7 @@ for epoch in range(num_epochs):
     with torch.no_grad():
         for batch in val_loader:
             images = batch['image'].to(device)
-            loss, _, _ = ae_model(images, mask_ratio=mask_ratio)
+            loss, _, _ = ae_model(images, mask_ratio=eval_mask_ratio)
             running_loss += loss.item() * images.size(0)
     val_loss = running_loss / len(val_loader.dataset)
     
