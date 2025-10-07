@@ -84,27 +84,25 @@ train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
 val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-norm_pix_loss = config['training_plan']['parameters']['norm_pix_loss']
-
-ae_model = convmae_convvit_base_patch16_dec512d8b(norm_pix_loss=norm_pix_loss, with_decoder=False)
+ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
 ae_model = ae_model.to(device)
 root = os.getcwd()
+
 model_name = '8b8fe69df52e48399c371b37e4fef502.pth'
 checkpoint_path = os.path.join(root, "models", model_name)
 checkpoint = torch.load(checkpoint_path, map_location=device)
 ae_model.load_state_dict(checkpoint, strict=False)
-
 # %%
-num_epochs=config['training_plan']['parameters']['epochs']
-best_val_loss=float('inf')
-best_model_state=None
-
-
 ae_model.eval()
 with torch.no_grad():
     for batch in val_loader:
         images = batch['image'].to(device)
         latent, _, ids_restore = ae_model(images, mask_ratio=0)
+
+        # max pooling and mean pooling of latent space (bs x num_patches x emb_dim)
+        latent_pooled_max = torch.max(latent, dim=1).values
+        latent_pooled_mean = torch.mean(latent, dim=1)
+        print(latent_pooled_max.shape, latent_pooled_mean.shape)
         break
 
 
