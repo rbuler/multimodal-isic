@@ -84,37 +84,26 @@ train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
 val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
+norm_pix_loss = config['training_plan']['parameters']['norm_pix_loss']
+
+ae_model = convmae_convvit_base_patch16_dec512d8b(norm_pix_loss=norm_pix_loss, with_decoder=False)
 ae_model = ae_model.to(device)
 root = os.getcwd()
-
 model_name = '8b8fe69df52e48399c371b37e4fef502.pth'
 checkpoint_path = os.path.join(root, "models", model_name)
 checkpoint = torch.load(checkpoint_path, map_location=device)
 ae_model.load_state_dict(checkpoint, strict=False)
+
 # %%
+best_val_loss=float('inf')
+best_model_state=None
+
+
 ae_model.eval()
 with torch.no_grad():
     for batch in val_loader:
-
-        ## TODO
-        ## extract latent space and save it to dataframe for each image in the dataset
-
         images = batch['image'].to(device)
-        image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
         latent, _, ids_restore = ae_model(images, mask_ratio=0)
-
-        # max pooling and mean pooling of latent space (bs x num_patches x emb_dim)
-        latent_pooled_max = torch.max(latent, dim=1).values
-        latent_pooled_mean = torch.mean(latent, dim=1)
-        
-        # create dataframe with image_path, segmentation_path, latent, latent_pooled_max, latent_pooled_mean
-        df_latent = pd.DataFrame({'image_path': image_path,
-                                  'segmentation_path': segmentation_path,
-                                  'latent': list(latent.cpu().numpy()),
-                                  'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
-                                  'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy())})
-        print(latent_pooled_max.shape, latent_pooled_mean.shape)
         break
 
 
