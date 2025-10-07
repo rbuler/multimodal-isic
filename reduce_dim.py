@@ -121,8 +121,8 @@ print(f"Dropped due to correlation filtering - gs: {dropped_gs}, red: {dropped_r
 
 features_test = features_test[features_train.columns]
 # %%
-output_radiomics_path_train = config['dir']['radiomics']
-output_radiomics_path_test = config['dir']['radiomics_test']
+output_radiomics_path_train = config['dir']['radiomics_red']
+output_radiomics_path_test = config['dir']['radiomics_test_red']
 
 features_train.to_pickle(output_radiomics_path_train)
 features_test.to_pickle(output_radiomics_path_test)
