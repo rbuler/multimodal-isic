@@ -109,19 +109,19 @@ def test(model, dataloader, device, neptune_run, fold_idx=None):
             all_targets.extend(target.cpu().numpy())
     test_acc = correct / total
     balanced_acc = balanced_accuracy_score(all_targets, all_preds)
-    report = classification_report(all_targets, all_preds)
+    report = classification_report(all_targets, all_preds, digits=5)
+
     if not fold_idx:
         if neptune_run is not None:
-            neptune_run["test/accuracy"].log(test_acc)
-            neptune_run["test/classification_report"].log(report)
-            neptune_run["test/balanced_accuracy"].log(balanced_acc)
-
+            neptune_run["test/accuracy"] = test_acc
+            neptune_run["test/balanced_accuracy"] = balanced_acc
+            neptune_run["test/classification_report"] = report
     else:
         if neptune_run is not None:
-            neptune_run[f"{fold_idx}/test/accuracy"].log(test_acc)
-            neptune_run[f"{fold_idx}/test/classification_report"].log(report)
-            neptune_run[f"{fold_idx}/test/balanced_accuracy"].log(balanced_acc)
-
+            neptune_run[f"{fold_idx}/test/accuracy"] = test_acc
+            neptune_run[f"{fold_idx}/test/balanced_accuracy"] = balanced_acc
+            neptune_run[f"{fold_idx}/test/classification_report"] = report
+            
     print(f"Test Accuracy: {test_acc:.4f}")
     print("Classification Report:\n", report)
     return test_acc, report
