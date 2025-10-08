@@ -3,10 +3,12 @@ import torch
 import yaml
 import typing
 import neptune
+import umap
 import argparse
 import numpy as np
 import pandas as pd
 import albumentations as A
+import matplotlib.pyplot as plt
 from dataset import DermDataset
 from torch.utils.data import DataLoader
 from albumentations.pytorch import ToTensorV2
@@ -84,11 +86,8 @@ ae_model.eval()
 latent_pooled = []
 latent_raw = []
 
-i = 0
-
 with torch.no_grad():
     for batch in train_val_loader:
-        i += 1
         images = batch['image'].to(device)
         image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
         latent, _, ids_restore = ae_model(images, mask_ratio=0)
@@ -115,15 +114,10 @@ with torch.no_grad():
         })
         latent_raw.append(raw_df)
 
-        if i == 10:
-            break  # for debugging
-
 latent_pooled = pd.concat(latent_pooled, ignore_index=True) if len(latent_pooled) > 0 else pd.DataFrame()
 latent_raw = pd.concat(latent_raw, ignore_index=True) if len(latent_raw) > 0 else pd.DataFrame()
-# %%
-import umap
-import matplotlib.pyplot as plt
 
+# %%
 X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
 X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
 labels = latent_pooled["target"].values.squeeze()
