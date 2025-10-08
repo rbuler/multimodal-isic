@@ -81,33 +81,78 @@ checkpoint = torch.load(checkpoint_path, map_location=device)
 ae_model.load_state_dict(checkpoint, strict=False)
 # %%
 ae_model.eval()
-all_latent_data = []
+latent_pooled = []
+latent_raw = []
+
+i = 0
 
 with torch.no_grad():
     for batch in train_val_loader:
+        i += 1
         images = batch['image'].to(device)
         image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
         latent, _, ids_restore = ae_model(images, mask_ratio=0)
 
-        # max pooling and mean pooling of latent space (bs x num_patches x emb_dim)
         latent_pooled_max = torch.max(latent, dim=1).values
         latent_pooled_mean = torch.mean(latent, dim=1)
 
-        # append data for each batch
-        batch_data = pd.DataFrame({
+        pooled_df = pd.DataFrame({
             'image_path': image_path,
             'segmentation_path': segmentation_path,
-            'latent': list(latent.cpu().numpy()),
+            'target': batch['target'].numpy(),
             'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
-            'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy())
+            'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy()),
+            'ids_restore': list(ids_restore.cpu().numpy())
         })
-        all_latent_data.append(batch_data)
-        break # for debugging, remove in actual run
+        latent_pooled.append(pooled_df)
 
+        raw_df = pd.DataFrame({
+            'image_path': image_path,
+            'segmentation_path': segmentation_path,
+            'target': batch['target'].numpy(),
+            'latent': list(latent.cpu().numpy()),
+            'ids_restore': list(ids_restore.cpu().numpy())
+        })
+        latent_raw.append(raw_df)
 
-df_latent = pd.concat(all_latent_data, ignore_index=True)
+        if i == 10:
+            break  # for debugging
 
-output_path = os.path.join(root, "latent_space_data.pkl")
-df_latent.to_pickle(output_path)
+latent_pooled = pd.concat(latent_pooled, ignore_index=True) if len(latent_pooled) > 0 else pd.DataFrame()
+latent_raw = pd.concat(latent_raw, ignore_index=True) if len(latent_raw) > 0 else pd.DataFrame()
+# %%
+import umap
+import matplotlib.pyplot as plt
+
+X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
+X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
+labels = latent_pooled["target"].values.squeeze()
+
+reducer_max = umap.UMAP(random_state=seed)
+embedding_max = reducer_max.fit_transform(X_max)
+reducer_mean = umap.UMAP(random_state=seed)
+embedding_mean = reducer_mean.fit_transform(X_mean)
+
+fig, axes = plt.subplots(1, 2, figsize=(12, 6))
+sc0 = axes[0].scatter(embedding_max[:, 0], embedding_max[:, 1], c=labels, cmap="tab10", s=8, alpha=0.8)
+axes[0].set_title("UMAP - pooled max")
+axes[0].axis("off")
+
+sc1 = axes[1].scatter(embedding_mean[:, 0], embedding_mean[:, 1], c=labels, cmap="tab10", s=8, alpha=0.8)
+axes[1].set_title("UMAP - pooled mean")
+axes[1].axis("off")
+
+fig.subplots_adjust(right=0.85)
+cax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
+fig.colorbar(sc0, cax=cax)
+plt.tight_layout(rect=[0, 0, 0.85, 1])
+
+plt_path = os.path.join(root, "umap_latent.png")
+plt.savefig(plt_path, dpi=150)
+print(f"Saved UMAP plot to {plt_path}")
+
+# %%
+output_path = os.path.join(root, "patient_latent_space_data.pkl")
+latent_pooled.to_pickle(output_path)
 print(f"Latent space data saved to {output_path}")
 # %%
