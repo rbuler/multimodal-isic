@@ -55,33 +55,20 @@ device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 df_train_val = pd.read_pickle(config['dir']['df'])
 df_test = pd.read_pickle(config['dir']['df_test'])
 
-train_transform = A.Compose([
+transform = A.Compose([
     A.Resize(224,224),
     A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
     ToTensorV2(),
 ])
 
-valid_transform = A.Compose([A.Resize(224,224),
-                             A.Normalize(mean=(0.485,0.456,0.406), std=(0.229,0.224,0.225)),
-                             ToTensorV2()])
-
-SPLITS=10
 seed = config['seed']
 np.random.seed(seed)
 torch.manual_seed(seed)
-kf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=seed)
-folds = list(kf.split(df_train_val, df_train_val['dx']))
-current_fold = config['training_plan']['parameters']['fold']
-train_idx, val_idx = folds[current_fold]
-df_train = df_train_val.iloc[train_idx]
-df_val = df_train_val.iloc[val_idx]
 
-train_dataset = DermDataset(df_train, radiomics=None, transform=train_transform)
-val_dataset = DermDataset(df_val, radiomics=None, transform=valid_transform)
-test_dataset = DermDataset(df_test, radiomics=None, transform=valid_transform)
+train_val_dataset = DermDataset(df_train_val, radiomics=None, transform=transform)
+test_dataset = DermDataset(df_test, radiomics=None, transform=transform)
 
-train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False)
-val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+train_val_loader = DataLoader(train_val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
 ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
@@ -94,12 +81,10 @@ checkpoint = torch.load(checkpoint_path, map_location=device)
 ae_model.load_state_dict(checkpoint, strict=False)
 # %%
 ae_model.eval()
+all_latent_data = []
+
 with torch.no_grad():
-    for batch in val_loader:
-
-        ## TODO
-        ## extract latent space and save it to dataframe for each image in the dataset
-
+    for batch in train_val_loader:
         images = batch['image'].to(device)
         image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
         latent, _, ids_restore = ae_model(images, mask_ratio=0)
@@ -107,15 +92,22 @@ with torch.no_grad():
         # max pooling and mean pooling of latent space (bs x num_patches x emb_dim)
         latent_pooled_max = torch.max(latent, dim=1).values
         latent_pooled_mean = torch.mean(latent, dim=1)
-        
-        # create dataframe with image_path, segmentation_path, latent, latent_pooled_max, latent_pooled_mean
-        df_latent = pd.DataFrame({'image_path': image_path,
-                                  'segmentation_path': segmentation_path,
-                                  'latent': list(latent.cpu().numpy()),
-                                  'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
-                                  'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy())})
-        print(latent_pooled_max.shape, latent_pooled_mean.shape)
-        break
+
+        # append data for each batch
+        batch_data = pd.DataFrame({
+            'image_path': image_path,
+            'segmentation_path': segmentation_path,
+            'latent': list(latent.cpu().numpy()),
+            'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
+            'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy())
+        })
+        all_latent_data.append(batch_data)
+        break # for debugging, remove in actual run
 
 
+df_latent = pd.concat(all_latent_data, ignore_index=True)
+
+output_path = os.path.join(root, "latent_space_data.pkl")
+df_latent.to_pickle(output_path)
+print(f"Latent space data saved to {output_path}")
 # %%
