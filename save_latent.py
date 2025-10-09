@@ -129,7 +129,6 @@ reducer_mean = umap.UMAP(random_state=seed)
 embedding_mean = reducer_mean.fit_transform(X_mean)
 
 # %%
-## TODO add plotting with umap functions
 umap_plot.output_notebook()
 hover_data = pd.DataFrame({
     "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
@@ -141,6 +140,9 @@ umap_plot.show(p_max)
 
 p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
 umap_plot.show(p_mean)
+
+## TODO experiment with different n_neighbors and min_dist parameters
+
 
 # %%
 output_path = os.path.join(root, "patient_latent_space_data.pkl")
