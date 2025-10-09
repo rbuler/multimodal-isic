@@ -4,6 +4,7 @@ import yaml
 import typing
 import neptune
 import umap
+import umap.plot as umap_plot
 import argparse
 import numpy as np
 import pandas as pd
@@ -70,8 +71,8 @@ torch.manual_seed(seed)
 train_val_dataset = DermDataset(df_train_val, radiomics=None, transform=transform)
 test_dataset = DermDataset(df_test, radiomics=None, transform=transform)
 
-train_val_loader = DataLoader(train_val_dataset, batch_size=64, shuffle=False)
-test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
+train_val_loader = DataLoader(train_val_dataset, batch_size=1000, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
 ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
 ae_model = ae_model.to(device)
@@ -127,26 +128,23 @@ embedding_max = reducer_max.fit_transform(X_max)
 reducer_mean = umap.UMAP(random_state=seed)
 embedding_mean = reducer_mean.fit_transform(X_mean)
 
-fig, axes = plt.subplots(1, 2, figsize=(12, 6))
-sc0 = axes[0].scatter(embedding_max[:, 0], embedding_max[:, 1], c=labels, cmap="tab10", s=8, alpha=0.8)
-axes[0].set_title("UMAP - pooled max")
-axes[0].axis("off")
+# %%
+## TODO add plotting with umap functions
+umap_plot.output_notebook()
+hover_data = pd.DataFrame({
+    "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
+    "target": latent_pooled["target"]
+})
 
-sc1 = axes[1].scatter(embedding_mean[:, 0], embedding_mean[:, 1], c=labels, cmap="tab10", s=8, alpha=0.8)
-axes[1].set_title("UMAP - pooled mean")
-axes[1].axis("off")
+p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2)
+umap_plot.show(p_max)
 
-fig.subplots_adjust(right=0.85)
-cax = fig.add_axes([0.88, 0.15, 0.03, 0.7])
-fig.colorbar(sc0, cax=cax)
-plt.tight_layout(rect=[0, 0, 0.85, 1])
-
-plt_path = os.path.join(root, "umap_latent.png")
-plt.savefig(plt_path, dpi=150)
-print(f"Saved UMAP plot to {plt_path}")
+p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
+umap_plot.show(p_mean)
 
 # %%
 output_path = os.path.join(root, "patient_latent_space_data.pkl")
 latent_pooled.to_pickle(output_path)
 print(f"Latent space data saved to {output_path}")
 # %%
+
