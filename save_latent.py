@@ -5,6 +5,7 @@ import typing
 import neptune
 import umap
 import umap.plot as umap_plot
+from bokeh.io import output_file, save
 import argparse
 import numpy as np
 import pandas as pd
@@ -123,12 +124,35 @@ X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
 X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
 labels = latent_pooled["target"].values.squeeze()
 
-reducer_max = umap.UMAP(random_state=seed)
+# %%
+n_neighbors = [2, 5, 10, 15, 25, 50, 100, 200]
+min_dist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9]
+param_grid = [(n, d) for n in n_neighbors for d in min_dist]
+save_path = '/users/project1/pt01191/MMODAL_ISIC/Data/umap_figures'
+
+for n, d in param_grid:
+    reducer = umap.UMAP(random_state=seed, n_neighbors=n, min_dist=d)
+    embedding = reducer.fit_transform(X_max)
+    umap_plot.output_notebook()
+    hover_data = pd.DataFrame({
+        "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
+        "target": latent_pooled["target"]
+    })
+    p = umap_plot.interactive(reducer, labels=labels, hover_data=hover_data, point_size=2)
+    umap_plot.show(p)
+    print(f"Plotted UMAP with n_neighbors={n}, min_dist={d}")
+    output_file_path = os.path.join(save_path, f"umap_n{n}_d{d}.html")
+    output_file(output_file_path)
+    save(p, filename=output_file_path)
+    print(f"Saved UMAP plot to {output_file_path}")
+# %%
+# experiment with a specific set of parameters 
+
+reducer_max = umap.UMAP(random_state=seed, n_neighbors=30, min_dist=0.3)
 embedding_max = reducer_max.fit_transform(X_max)
-reducer_mean = umap.UMAP(random_state=seed)
+reducer_mean = umap.UMAP(random_state=seed, n_neighbors=30, min_dist=0.3)
 embedding_mean = reducer_mean.fit_transform(X_mean)
 
-# %%
 umap_plot.output_notebook()
 hover_data = pd.DataFrame({
     "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
@@ -140,13 +164,9 @@ umap_plot.show(p_max)
 
 p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
 umap_plot.show(p_mean)
-
-## TODO experiment with different n_neighbors and min_dist parameters
-
-
 # %%
-output_path = os.path.join(root, "patient_latent_space_data.pkl")
-latent_pooled.to_pickle(output_path)
-print(f"Latent space data saved to {output_path}")
+# output_path = os.path.join(root, "patient_latent_space_data.pkl")
+# latent_pooled.to_pickle(output_path)
+# print(f"Latent space data saved to {output_path}")
 # %%
 
