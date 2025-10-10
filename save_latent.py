@@ -131,39 +131,25 @@ param_grid = [(n, d) for n in n_neighbors for d in min_dist]
 save_path = '/users/project1/pt01191/MMODAL_ISIC/Data/umap_figures'
 
 for n, d in param_grid:
-    reducer = umap.UMAP(random_state=seed, n_neighbors=n, min_dist=d)
-    embedding = reducer.fit_transform(X_max)
-    umap_plot.output_notebook()
+    reducer_max = umap.UMAP(random_state=seed, n_neighbors=n, min_dist=d)
+    embedding_max = reducer_max.fit_transform(X_max)
     hover_data = pd.DataFrame({
         "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
         "target": latent_pooled["target"]
     })
-    p = umap_plot.interactive(reducer, labels=labels, hover_data=hover_data, point_size=2)
-    umap_plot.show(p)
-    print(f"Plotted UMAP with n_neighbors={n}, min_dist={d}")
-    output_file_path = os.path.join(save_path, f"umap_n{n}_d{d}.html")
-    output_file(output_file_path)
-    save(p, filename=output_file_path)
-    print(f"Saved UMAP plot to {output_file_path}")
-# %%
-# experiment with a specific set of parameters 
+    p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2)
+    output_file_path_max = os.path.join(save_path, f"umap_max_n{n}_d{d}.html")
+    output_file(output_file_path_max)
+    save(p_max, filename=output_file_path_max)
+    print(f"Saved UMAP max plot to {output_file_path_max}")
 
-reducer_max = umap.UMAP(random_state=seed, n_neighbors=30, min_dist=0.3)
-embedding_max = reducer_max.fit_transform(X_max)
-reducer_mean = umap.UMAP(random_state=seed, n_neighbors=30, min_dist=0.3)
-embedding_mean = reducer_mean.fit_transform(X_mean)
-
-umap_plot.output_notebook()
-hover_data = pd.DataFrame({
-    "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
-    "target": latent_pooled["target"]
-})
-
-p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2)
-umap_plot.show(p_max)
-
-p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
-umap_plot.show(p_mean)
+    reducer_mean = umap.UMAP(random_state=seed, n_neighbors=n, min_dist=d)
+    embedding_mean = reducer_mean.fit_transform(X_mean)
+    p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
+    output_file_path_mean = os.path.join(save_path, f"umap_mean_n{n}_d{d}.html")
+    output_file(output_file_path_mean)
+    save(p_mean, filename=output_file_path_mean)
+    print(f"Saved UMAP mean plot to {output_file_path_mean}")
 # %%
 # output_path = os.path.join(root, "patient_latent_space_data.pkl")
 # latent_pooled.to_pickle(output_path)
