@@ -49,7 +49,9 @@ class DermDataset(Dataset):
             'sex': sex,
             'loc': loc,
             'artifacts': artifacts,
-            'target': target
+            'target': target,
+            'image_path': row['image_path'],
+            'segmentation_path': row['segmentation_path']
         }
 
     def crop_centered_on_mask(self, image, mask, crop_size=450):
