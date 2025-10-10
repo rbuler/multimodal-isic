@@ -151,6 +151,38 @@ for n, d in param_grid:
     save(p_mean, filename=output_file_path_mean)
     print(f"Saved UMAP mean plot to {output_file_path_mean}")
 # %%
+# experiment with a specific set of parameters 
+SPLITS=10
+seed = config['seed']
+np.random.seed(seed)
+torch.manual_seed(seed)
+kf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=seed)
+folds = list(kf.split(df_train_val, df_train_val['dx']))
+current_fold = config['training_plan']['parameters']['fold']
+train_idx, val_idx = folds[current_fold]
+# set labels to 0 and 1, for training and validation set respectively
+labels = np.zeros(len(df_train_val))
+labels[val_idx] = 1
+
+
+reducer_max = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.)
+embedding_max = reducer_max.fit_transform(X_max)
+reducer_mean = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.)
+embedding_mean = reducer_mean.fit_transform(X_mean)
+
+umap_plot.output_notebook()
+hover_data = pd.DataFrame({
+    "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
+    "target": latent_pooled["target"]
+})
+
+p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2, theme='fire')
+umap_plot.show(p_max)
+
+p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2, theme='fire')
+umap_plot.show(p_mean)
+
+# %%
 # output_path = os.path.join(root, "patient_latent_space_data.pkl")
 # latent_pooled.to_pickle(output_path)
 # print(f"Latent space data saved to {output_path}")
