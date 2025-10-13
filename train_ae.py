@@ -94,6 +94,12 @@ train_dataset = DermDataset(df_train, radiomics=None, transform=train_transform)
 val_dataset = DermDataset(df_val, radiomics=None, transform=valid_transform)
 test_dataset = DermDataset(df_test, radiomics=None, transform=valid_transform)
 
+# TODO
+# Add oversampling of underrepresented classes in the training set
+# so that the model does not only learn to reconstruct benign lesions
+
+
+
 train_loader = DataLoader(train_dataset, batch_size=config['training_plan']['parameters']['batch_size'], shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
