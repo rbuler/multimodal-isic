@@ -21,6 +21,8 @@ if not hasattr(np, 'float'):
 sys.path.append("ConvMAE")
 from ConvMAE.models_convmae import convmae_convvit_base_patch16_dec512d8b
 
+root = os.getcwd()
+
 
 def lr_lambda(current_epoch: int):
     base_lr = config['training_plan']['parameters']['lr']
@@ -45,7 +47,6 @@ def get_args_parser(path: typing.Union[str, bytes, os.PathLike]):
     return parser
 
 # %%
-
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
 with open(args.config_path) as file:
@@ -75,15 +76,15 @@ test_dataset = DermDataset(df_test, radiomics=None, transform=transform)
 train_val_loader = DataLoader(train_val_dataset, batch_size=1000, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=1000, shuffle=False)
 
+# %%
 ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
 ae_model = ae_model.to(device)
-root = os.getcwd()
 
 model_name = '8b8fe69df52e48399c371b37e4fef502.pth'
 checkpoint_path = os.path.join(root, "models", model_name)
 checkpoint = torch.load(checkpoint_path, map_location=device)
 ae_model.load_state_dict(checkpoint, strict=False)
-# %%
+
 ae_model.eval()
 latent_pooled = []
 latent_raw = []
@@ -118,11 +119,32 @@ with torch.no_grad():
 
 latent_pooled = pd.concat(latent_pooled, ignore_index=True) if len(latent_pooled) > 0 else pd.DataFrame()
 latent_raw = pd.concat(latent_raw, ignore_index=True) if len(latent_raw) > 0 else pd.DataFrame()
-
 # %%
 X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
 X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
 labels = latent_pooled["target"].values.squeeze()
+
+# X_raw = np.vstack(latent_raw["latent"].values)
+# labels_raw = latent_raw["target"].values.squeeze()
+# labels_raw = np.repeat(labels_raw, len(latent_raw["latent"].values[0]), axis=0)
+# X_raw_ids = np.vstack(latent_raw["ids_restore"].values)
+# X_raw_ids = np.reshape(X_raw_ids.T, (-1,))
+
+# %%
+# X_raw = X_raw[:196*50]
+# labels_raw = labels_raw[:196*50]
+# X_raw_ids = X_raw_ids[:196*50]
+# reducer_raw = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+# embedding_raw = reducer_raw.fit_transform(X_raw)
+# umap_plot.points(reducer_raw, labels=labels_raw, theme='fire')
+
+# hover_data = pd.DataFrame({
+#     "image": np.repeat(latent_raw["image_path"].apply(lambda x: x.split('/')[-1]).values, X_raw.shape[0] // latent_raw.shape[0], axis=0),
+#     "target": np.repeat(latent_raw["target"].values, X_raw.shape[0] // latent_raw.shape[0], axis=0),
+# })
+# umap_plot.output_notebook()
+# p_raw = umap_plot.interactive(reducer_raw, labels=labels_raw, hover_data=hover_data, point_size=1)
+# umap_plot.show(p_raw)
 
 # %%
 n_neighbors = [2, 5, 10, 15, 25, 50, 100, 200]
@@ -151,36 +173,145 @@ for n, d in param_grid:
     save(p_mean, filename=output_file_path_mean)
     print(f"Saved UMAP mean plot to {output_file_path_mean}")
 # %%
-# experiment with a specific set of parameters 
-SPLITS=10
-seed = config['seed']
-np.random.seed(seed)
-torch.manual_seed(seed)
-kf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=seed)
-folds = list(kf.split(df_train_val, df_train_val['dx']))
-current_fold = config['training_plan']['parameters']['fold']
-train_idx, val_idx = folds[current_fold]
-# set labels to 0 and 1, for training and validation set respectively
-labels = np.zeros(len(df_train_val))
-labels[val_idx] = 1
+# TODO compare autoencoders with different mask ratios
+
+model_names = ['75f15b3dee2a4fe1ad97b7a0e454cf1a.pth',
+               '403ae2156c114b98b54d46ecf2594cb6.pth',
+               'd6c5a23936e843fbb22538de8817bf76.pth']
+for model_name in model_names:
+    ae_model = convmae_convvit_base_patch16_dec512d8b(with_decoder=False)
+    ae_model = ae_model.to(device)
+    checkpoint_path = os.path.join(root, "models", model_name)
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    ae_model.load_state_dict(checkpoint, strict=False)
+    ae_model.eval()
+    latent_pooled = []
+    with torch.no_grad():
+        for batch in train_val_loader:
+            images = batch['image'].to(device)
+            image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
+            latent, _, ids_restore = ae_model(images, mask_ratio=0)
+
+            latent_pooled_max = torch.max(latent, dim=1).values
+            latent_pooled_mean = torch.mean(latent, dim=1)
+
+            pooled_df = pd.DataFrame({
+                'image_path': image_path,
+                'segmentation_path': segmentation_path,
+                'target': batch['target'].numpy(),
+                'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
+                'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy()),
+                'ids_restore': list(ids_restore.cpu().numpy())
+            })
+            latent_pooled.append(pooled_df)
+        
+        latent_pooled = pd.concat(latent_pooled, ignore_index=True) if len(latent_pooled) > 0 else pd.DataFrame()
+
+        X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
+        X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
+        labels = latent_pooled["target"].values.squeeze()
+
+        # sample balanced subset for UMAP
+        class_counts = pd.Series(labels).value_counts()
+        sampled_indices = []
+        cap = 1100
+        for cls, cnt in class_counts.items():
+            cls_indices = np.where(labels == cls)[0]
+            take = min(cnt, cap)
+            sampled_cls_indices = np.random.choice(cls_indices, take, replace=False)
+            sampled_indices.extend(sampled_cls_indices)
+        sampled_indices = np.array(sampled_indices)
+        np.random.shuffle(sampled_indices)
+
+        X_max = X_max[sampled_indices]
+        X_mean = X_mean[sampled_indices]
+        labels = labels[sampled_indices]
+
+        reducer_max = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.1)
+        embedding_max = reducer_max.fit_transform(X_max)
+        reducer_mean = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.1)
+        embedding_mean = reducer_mean.fit_transform(X_mean)
+
+        # umap_plot.points(reducer_max, labels=labels)
+        # plt.suptitle(f"UMAP Latent Space - Max Pooling")
+        # plt.show()
+        # umap_plot.points(reducer_mean, labels=labels)
+        # plt.suptitle(f"UMAP Latent Space - Mean Pooling")
+        # plt.show()
 
 
-reducer_max = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.)
-embedding_max = reducer_max.fit_transform(X_max)
-reducer_mean = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.)
-embedding_mean = reducer_mean.fit_transform(X_mean)
+        # plt.figure(figsize=(8, 6))
+        # scatter = plt.scatter(
+        #     embedding_max[:, 0],
+        #     embedding_max[:, 1],
+        #     c=labels,
+        #     cmap=plt.get_cmap('tab20', len(set(labels))),
+        #     s=3
+        # )
+        # plt.colorbar(scatter, ticks=range(len(set(labels))))
+        # plt.title("UMAP Projection of Latent Space - Max Pooling")
+        # plt.show()
 
-umap_plot.output_notebook()
-hover_data = pd.DataFrame({
-    "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
-    "target": latent_pooled["target"]
-})
 
-p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2, theme='fire')
-umap_plot.show(p_max)
+        # plt.figure(figsize=(8, 6))
+        # scatter = plt.scatter(
+        #     embedding_mean[:, 0],
+        #     embedding_mean[:, 1],
+        #     c=labels,
+        #     cmap=plt.get_cmap('tab20', len(set(labels))),
+        #     s=3
+        # )
+        # plt.colorbar(scatter, ticks=range(len(set(labels))))
+        # plt.title("UMAP Projection of Latent Space - Mean Pooling")
+        # plt.show()
 
-p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2, theme='fire')
-umap_plot.show(p_mean)
+
+        okabe_ito = [
+            "#E69F00", "#56B4E9", "#009E73",
+            "#F0E442", "#0072B2", "#D55E00",
+            "#CC79A7", "#999999"
+        ]
+
+        plt.figure(figsize=(8, 6))
+        unique_labels = sorted(set(labels))
+        for i, lab in enumerate(unique_labels):
+            mask = labels == lab
+            plt.scatter(
+                embedding_max[mask, 0], embedding_max[mask, 1],
+                s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
+            )
+
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        plt.title("UMAP Projection of Latent Space - Max Pooling")
+        plt.tight_layout()
+        plt.show()
+
+        plt.figure(figsize=(8, 6))
+        unique_labels = sorted(set(labels))
+        for i, lab in enumerate(unique_labels):
+            mask = labels == lab
+            plt.scatter(
+                embedding_mean[mask, 0], embedding_mean[mask, 1],
+                s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
+            )
+
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        plt.title("UMAP Projection of Latent Space - Mean Pooling")
+        plt.tight_layout()
+        plt.show()
+
+
+        # hover_data = pd.DataFrame({
+        #     "image": latent_pooled["image_path"].apply(lambda x: x.split('/')[-1]),
+        #     "target": latent_pooled["target"]
+        # })
+        # p_max = umap_plot.interactive(reducer_max, labels=labels, hover_data=hover_data, point_size=2)
+        # umap_plot.show(p_max)
+        # p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
+        # umap_plot.show(p_mean)
+
+# %%
+# visualize resulting UMAP graphs using reducer.graph_
 
 # %%
 # output_path = os.path.join(root, "patient_latent_space_data.pkl")
