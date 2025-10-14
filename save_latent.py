@@ -146,6 +146,47 @@ labels = latent_pooled["target"].values.squeeze()
 # p_raw = umap_plot.interactive(reducer_raw, labels=labels_raw, hover_data=hover_data, point_size=1)
 # umap_plot.show(p_raw)
 
+# %% 
+reducer_max = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+embedding_max = reducer_max.fit_transform(X_max)
+reducer_mean = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+embedding_mean = reducer_mean.fit_transform(X_mean)
+
+okabe_ito = [
+    "#E69F00", "#56B4E9", "#009E73",
+    "#F0E442", "#0072B2", "#D55E00",
+    "#CC79A7", "#999999"
+]
+
+plt.figure(figsize=(8, 6))
+unique_labels = sorted(set(labels))
+for i, lab in enumerate(unique_labels):
+    mask = labels == lab
+    plt.scatter(
+        embedding_max[mask, 0], embedding_max[mask, 1],
+        s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
+    )
+
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+plt.title("UMAP Projection of Latent Space - Max Pooling")
+plt.tight_layout()
+plt.show()
+
+plt.figure(figsize=(8, 6))
+unique_labels = sorted(set(labels))
+for i, lab in enumerate(unique_labels):
+    mask = labels == lab
+    plt.scatter(
+        embedding_mean[mask, 0], embedding_mean[mask, 1],
+        s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
+    )
+
+plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+plt.title("UMAP Projection of Latent Space - Mean Pooling")
+plt.tight_layout()
+plt.show()
+
+
 # %%
 n_neighbors = [2, 5, 10, 15, 25, 50, 100, 200]
 min_dist = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9]
@@ -210,27 +251,28 @@ for model_name in model_names:
         X_max = np.vstack(latent_pooled["latent_pooled_max"].values)
         X_mean = np.vstack(latent_pooled["latent_pooled_mean"].values)
         labels = latent_pooled["target"].values.squeeze()
+        # binarize labels so
 
         # sample balanced subset for UMAP
-        class_counts = pd.Series(labels).value_counts()
-        sampled_indices = []
-        cap = 1100
-        for cls, cnt in class_counts.items():
-            cls_indices = np.where(labels == cls)[0]
-            take = min(cnt, cap)
-            sampled_cls_indices = np.random.choice(cls_indices, take, replace=False)
-            sampled_indices.extend(sampled_cls_indices)
-        sampled_indices = np.array(sampled_indices)
-        np.random.shuffle(sampled_indices)
+        # class_counts = pd.Series(labels).value_counts()
+        # sampled_indices = []
+        # cap = 200
+        # for cls, cnt in class_counts.items():
+        #     cls_indices = np.where(labels == cls)[0]
+        #     take = min(cnt, cap)
+        #     sampled_cls_indices = np.random.choice(cls_indices, take, replace=False)
+        #     sampled_indices.extend(sampled_cls_indices)
+        # sampled_indices = np.array(sampled_indices)
+        # np.random.shuffle(sampled_indices)
 
-        X_max = X_max[sampled_indices]
-        X_mean = X_mean[sampled_indices]
-        labels = labels[sampled_indices]
+        # X_max = X_max[sampled_indices]
+        # X_mean = X_mean[sampled_indices]
+        # labels = labels[sampled_indices]
 
-        reducer_max = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.1)
-        embedding_max = reducer_max.fit_transform(X_max)
-        reducer_mean = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.1)
-        embedding_mean = reducer_mean.fit_transform(X_mean)
+        # reducer_max = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.2, n_components=2)
+        # embedding_max = reducer_max.fit_transform(X_max)
+        # reducer_mean = umap.UMAP(random_state=seed, n_neighbors=25, min_dist=0.2, n_components=2)
+        # embedding_mean = reducer_mean.fit_transform(X_mean)
 
         # umap_plot.points(reducer_max, labels=labels)
         # plt.suptitle(f"UMAP Latent Space - Max Pooling")
@@ -239,66 +281,50 @@ for model_name in model_names:
         # plt.suptitle(f"UMAP Latent Space - Mean Pooling")
         # plt.show()
 
-
-        # plt.figure(figsize=(8, 6))
-        # scatter = plt.scatter(
-        #     embedding_max[:, 0],
-        #     embedding_max[:, 1],
-        #     c=labels,
-        #     cmap=plt.get_cmap('tab20', len(set(labels))),
-        #     s=3
-        # )
-        # plt.colorbar(scatter, ticks=range(len(set(labels))))
-        # plt.title("UMAP Projection of Latent Space - Max Pooling")
-        # plt.show()
-
-
-        # plt.figure(figsize=(8, 6))
-        # scatter = plt.scatter(
-        #     embedding_mean[:, 0],
-        #     embedding_mean[:, 1],
-        #     c=labels,
-        #     cmap=plt.get_cmap('tab20', len(set(labels))),
-        #     s=3
-        # )
-        # plt.colorbar(scatter, ticks=range(len(set(labels))))
-        # plt.title("UMAP Projection of Latent Space - Mean Pooling")
-        # plt.show()
-
-
+        import mpl_toolkits.mplot3d  # registers 3D projection
         okabe_ito = [
             "#E69F00", "#56B4E9", "#009E73",
             "#F0E442", "#0072B2", "#D55E00",
             "#CC79A7", "#999999"
         ]
+        
+        # reducer_max_3d = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1, n_components=3)
+        # embedding_max_3d = reducer_max_3d.fit_transform(X_max)
+        # reducer_mean_3d = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1, n_components=3)
+        # embedding_mean_3d = reducer_mean_3d.fit_transform(X_mean)
 
-        plt.figure(figsize=(8, 6))
-        unique_labels = sorted(set(labels))
-        for i, lab in enumerate(unique_labels):
-            mask = labels == lab
-            plt.scatter(
-                embedding_max[mask, 0], embedding_max[mask, 1],
-                s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
-            )
+        # unique_labels = sorted(set(labels))
 
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
-        plt.title("UMAP Projection of Latent Space - Max Pooling")
-        plt.tight_layout()
-        plt.show()
+       
+        # 3D scatter for max-pooled embeddings
+        # fig = plt.figure(figsize=(8, 6))
+        # ax = fig.add_subplot(111, projection='3d')
+        # for i, lab in enumerate(unique_labels):
+        #     mask = labels == lab
+        #     ax.scatter(
+        #     embedding_max_3d[mask, 0], embedding_max_3d[mask, 1], embedding_max_3d[mask, 2],
+        #     s=10, color=okabe_ito[i % len(okabe_ito)], label=lab, depthshade=False
+        #     )
+        # ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        # ax.set_title("UMAP 3D Projection of Latent Space - Max Pooling")
+        # ax.view_init(elev=20, azim=30)
+        # plt.tight_layout()
+        # plt.show()
 
-        plt.figure(figsize=(8, 6))
-        unique_labels = sorted(set(labels))
-        for i, lab in enumerate(unique_labels):
-            mask = labels == lab
-            plt.scatter(
-                embedding_mean[mask, 0], embedding_mean[mask, 1],
-                s=5, color=okabe_ito[i % len(okabe_ito)], label=lab
-            )
-
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
-        plt.title("UMAP Projection of Latent Space - Mean Pooling")
-        plt.tight_layout()
-        plt.show()
+        # # 3D scatter for mean-pooled embeddings
+        # fig = plt.figure(figsize=(8, 6))
+        # ax = fig.add_subplot(111, projection='3d')
+        # for i, lab in enumerate(unique_labels):
+        #     mask = labels == lab
+        #     ax.scatter(
+        #     embedding_mean_3d[mask, 0], embedding_mean_3d[mask, 1], embedding_mean_3d[mask, 2],
+        #     s=10, color=okabe_ito[i % len(okabe_ito)], label=lab, depthshade=False
+        #     )
+        # ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+        # ax.set_title("UMAP 3D Projection of Latent Space - Mean Pooling")
+        # ax.view_init(elev=20, azim=30)
+        # plt.tight_layout()
+        # plt.show()
 
 
         # hover_data = pd.DataFrame({
@@ -309,6 +335,86 @@ for model_name in model_names:
         # umap_plot.show(p_max)
         # p_mean = umap_plot.interactive(reducer_mean, labels=labels, hover_data=hover_data, point_size=2)
         # umap_plot.show(p_mean)
+
+        
+        # XGBOOST classifier to predict labels based on latent features
+        from xgboost import XGBClassifier
+        from sklearn.metrics import classification_report, confusion_matrix
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(X_max, labels, test_size=0.2, random_state=seed, stratify=labels)
+        xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+        xgb_clf.fit(X_train, y_train)
+        y_pred = xgb_clf.predict(X_val)
+        # print accuracy with xx.xx%f format
+        accuracy = (y_pred == y_val).mean() * 100
+        print(f"Model {model_name} - XGBoost Classifier on Max-Pooled Latent Features - Accuracy: {accuracy:.2f}%")
+        # print(classification_report(y_val, y_pred))
+        # print(confusion_matrix(y_val, y_pred))
+        
+        # XGboost on mean-pooled features
+        X_train, X_val, y_train, y_val = train_test_split(X_mean, labels, test_size=0.2, random_state=seed, stratify=labels)
+        xgb_clf = XGBClassifier(use_label_encoder=False, eval_metric='mlogloss')
+        xgb_clf.fit(X_train, y_train)
+        y_pred = xgb_clf.predict(X_val)
+        accuracy = (y_pred == y_val).mean() * 100
+        print(f"Model {model_name} - XGBoost Classifier on Mean-Pooled Latent Features - Accuracy: {accuracy:.2f}%")
+        # print(classification_report(y_val, y_pred))
+        # print(confusion_matrix(y_val, y_pred))
+        
+        # train linear layer on latent features
+        from sklearn.linear_model import LogisticRegression
+        X_train, X_val, y_train, y_val = train_test_split(X_max, labels, test_size=0.2, random_state=seed, stratify=labels)
+        log_reg = LogisticRegression(max_iter=1000)
+        log_reg.fit(X_train, y_train)
+        y_pred = log_reg.predict(X_val)
+        accuracy = (y_pred == y_val).mean() * 100
+        print(f"Model {model_name} - Logistic Regression on Max-Pooled Latent Features - Accuracy: {accuracy:.2f}%")
+        # print(classification_report(y_val, y_pred))
+        # print(confusion_matrix(y_val, y_pred))
+        
+        X_train, X_val, y_train, y_val = train_test_split(X_mean, labels, test_size=0.2, random_state=seed, stratify=labels)
+        log_reg = LogisticRegression(max_iter=1000)
+        log_reg.fit(X_train, y_train)
+        y_pred = log_reg.predict(X_val)
+        accuracy = (y_pred == y_val).mean() * 100
+        print(f"Model {model_name} - Logistic Regression on Mean-Pooled Latent Features - Accuracy: {accuracy:.2f}%")
+        # print(classification_report(y_val, y_pred))
+        # print(confusion_matrix(y_val, y_pred))
+
+
+# %%
+# make 7 plots where one class is normal colored and the rest are gray
+for i, lab in enumerate(unique_labels):
+    plt.figure(figsize=(8, 6))
+    for j, other_lab in enumerate(unique_labels):
+        mask = labels == other_lab
+        color = okabe_ito[i % len(okabe_ito)] if lab == other_lab else 'lightgray'
+        plt.scatter(
+            embedding_max[mask, 0], embedding_max[mask, 1],
+            s=5, color=color, label=other_lab if lab == other_lab else None
+        )
+
+    if lab in unique_labels:
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    plt.title(f"UMAP Projection of Latent Space - Max Pooling (Highlight: {lab})")
+    plt.tight_layout()
+    plt.show()
+
+    plt.figure(figsize=(8, 6))
+    for j, other_lab in enumerate(unique_labels):
+        mask = labels == other_lab
+        color = okabe_ito[i % len(okabe_ito)] if lab == other_lab else 'lightgray'
+        plt.scatter(
+            embedding_mean[mask, 0], embedding_mean[mask, 1],
+            s=5, color=color, label=other_lab if lab == other_lab else None
+        )
+
+    if lab in unique_labels:
+        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
+    plt.title(f"UMAP Projection of Latent Space - Mean Pooling (Highlight: {lab})")
+    plt.tight_layout()
+    plt.show()
+
 
 # %%
 # visualize resulting UMAP graphs using reducer.graph_
