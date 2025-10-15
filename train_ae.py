@@ -1,4 +1,5 @@
 # %%
+import gc
 import os
 import copy
 import torch
@@ -7,14 +8,18 @@ import uuid
 import typing
 import neptune
 import argparse
+import seaborn as sns
 import numpy as np
 import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
 import albumentations as A
+import umap
+import umap.plot as umap_plot
 from dataset import DermDataset
 from torch.utils.data import DataLoader
 from albumentations.pytorch import ToTensorV2
+from torch.utils.data import WeightedRandomSampler
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
 import io
@@ -93,14 +98,16 @@ df_val = df_train_val.iloc[val_idx]
 train_dataset = DermDataset(df_train, radiomics=None, transform=train_transform)
 val_dataset = DermDataset(df_val, radiomics=None, transform=valid_transform)
 test_dataset = DermDataset(df_test, radiomics=None, transform=valid_transform)
+# %%
+# Over-sampling to handle class imbalance
+class_counts = df_train['dx'].value_counts()
+class_weights = 1.0 / class_counts
+sample_weights = df_train['dx'].map(class_weights).astype(float).values
+sample_weights_tensor = torch.as_tensor(sample_weights, dtype=torch.double)
+sampler = WeightedRandomSampler(weights=sample_weights_tensor, num_samples=len(sample_weights_tensor), replacement=True)
 
-# TODO
-# Add oversampling of underrepresented classes in the training set
-# so that the model does not only learn to reconstruct benign lesions
-
-
-
-train_loader = DataLoader(train_dataset, batch_size=config['training_plan']['parameters']['batch_size'], shuffle=True)
+# train_loader = DataLoader(train_dataset, batch_size=config['training_plan']['parameters']['batch_size'], shuffle=True)
+train_loader = DataLoader(train_dataset, batch_size=config['training_plan']['parameters']['batch_size'], sampler=sampler)
 val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
 test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
