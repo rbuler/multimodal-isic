@@ -65,6 +65,52 @@ device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 df_train_val = pd.read_pickle(config['dir']['df'])
 df_test = pd.read_pickle(config['dir']['df_test'])
 
+
+# %%
+use_isic2019 = True
+if use_isic2019:
+    path_isic2019_csv = "/users/project1/pt01191/MMODAL_ISIC/Data/ISIC2019/ISIC_2019_Training_Metadata.csv"
+    path_isic2019 = "/users/project1/pt01191/MMODAL_ISIC/Data/ISIC2019/images/ISIC_2019_Training_Input"
+    path_isic_gt = "/users/project1/pt01191/MMODAL_ISIC/Data/ISIC2019/ISIC_2019_Training_GroundTruth.csv"
+    df_isic2019 = pd.read_csv(path_isic2019_csv)
+    df_isic2019['image_path'] = df_isic2019['image'].apply(lambda x: os.path.join(path_isic2019, f"{x}.jpg"))
+    df_isic_gt = pd.read_csv(path_isic_gt)
+    # create one column "dx", and map cols MEL NV BCC AK BKL DF VASC SCC UNK to one column where i want: NV: 5, MEL: 4, BKL:2, BCC:1, AK:0, VASC:6, DF:3, drop unk and scc, classes are in cols, binary values
+    df_isic_gt['dx'] = 0
+    dx_mapping = {
+        'MEL': 4,
+        'NV': 5,
+        'BCC': 1,
+        'AK': 0,
+        'BKL': 2,
+        'DF': 3,
+        'VASC': 6,
+        'SCC': None,
+        'UNK': None
+    }
+    for col, val in dx_mapping.items():
+        df_isic_gt.loc[df_isic_gt[col] == 1, 'dx'] = val
+    df_isic_gt = df_isic_gt.drop(columns=list(dx_mapping.keys()))
+    df_isic_gt = df_isic_gt.dropna(subset=['dx'])
+    df_isic_gt['dx'] = df_isic_gt['dx'].astype(int)
+    df_isic2019 = df_isic2019.merge(df_isic_gt[['image', 'dx']], on='image', how='inner')
+
+    df_isic2019 = df_isic2019[['image_path', 'dx']]
+    df_train_val = pd.concat([df_train_val, df_isic2019], ignore_index=True, sort=False)
+    df_train_val = df_train_val.reset_index(drop=True)
+    df_train_val['image_id'] = df_train_val['image_path'].apply(lambda x: os.path.basename(x).split('.')[0])
+    df_train_val = df_train_val.drop_duplicates(subset=['image_id'], keep='first')
+    df_train_val = df_train_val.reset_index(drop=True)
+    df_test['image_id'] = df_test['image_path'].apply(lambda x: os.path.basename(x).split('.')[0])
+    df_train_val = df_train_val[~df_train_val['image_id'].isin(df_test['image_id'])]
+    df_train_val = df_train_val.reset_index(drop=True)
+    # find most freqeunt existing value in each column and fill na with it
+    columns_to_fill = ['segmentation_path', 'age', 'sex', 'localization', 'hair', 'ruler_marks', 'bubbles', 'vignette', 'frame', 'other', 'age_normalized', 'sex_encoded', 'loc_encoded']
+    for column in columns_to_fill:
+        if column in df_train_val.columns:
+            most_frequent = df_train_val[column].mode()[0]
+            df_train_val[column] = df_train_val[column].fillna(most_frequent)
+# %%
 train_transform = A.Compose([
     A.Resize(224,224),
     A.RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.33), p=1.0),
