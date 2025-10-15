@@ -8,7 +8,6 @@ import uuid
 import typing
 import neptune
 import argparse
-import seaborn as sns
 import numpy as np
 import pandas as pd
 import torch.nn as nn
@@ -204,15 +203,79 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
         running_loss += loss.item() * images.size(0)
+        break
     train_loss = running_loss / len(train_loader.dataset)
     
     ae_model.eval()
     running_loss = 0.0
+    latent_max_list, latent_mean_list, target_list = [], [], []
     with torch.no_grad():
         for batch in val_loader:
             images = batch['image'].to(device)
             loss, _, _ = ae_model(images, mask_ratio=eval_mask_ratio)
             running_loss += loss.item() * images.size(0)
+
+            # collect pooled latents and targets for UMAP visualization when needed
+            # change to log every 10 epochs
+            if epoch == num_epochs - 1:
+                latent, _, _ = ae_model.forward_encoder(images, mask_ratio=0.0)
+                latent_pooled_max = torch.max(latent, dim=1).values  # (B, D)
+                latent_pooled_mean = torch.mean(latent, dim=1)       # (B, D)
+                latent_max_list.append(latent_pooled_max.cpu())
+                latent_mean_list.append(latent_pooled_mean.cpu())
+                targets = batch['target']
+                if targets is not None:
+                    target_list.append(targets.cpu())
+        if epoch == num_epochs - 1:
+            if latent_max_list and target_list:
+                latent_max_all = torch.cat(latent_max_list, dim=0).numpy()
+                latent_mean_all = torch.cat(latent_mean_list, dim=0).numpy()
+                targets_all = torch.cat(target_list, dim=0).numpy()
+
+
+                # TODO visualize with UMAP and log to Neptune
+                ## optimize cpu memory usage when logging every 10 epochs
+                ## because it works slowly
+
+                reducer_max = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+                embedding_max = reducer_max.fit_transform(latent_max_all)
+                reducer_mean = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
+                embedding_mean = reducer_mean.fit_transform(latent_mean_all)
+
+                # plot using matplotlib
+
+                if config["neptune"]:
+                    fig_max = umap.plot.points(
+                                reducer_max,
+                                labels=targets_all,
+                                theme='viridis',
+                                background='white',
+                                width=800,
+                                height=600
+                            )
+                    buf_max = io.BytesIO()
+                    fig_max.savefig(buf_max, format='png', bbox_inches='tight')
+                    buf_max.seek(0)
+                    run[f"visuals/umap_latent_max_epoch_{epoch+1}"].append(
+                        neptune.types.File.from_content(buf_max.getvalue(), extension='png'))
+                    plt.close(fig_max)
+
+                    # Mean pooled latent
+                    fig_mean = umap.plot.points(
+                        reducer_mean,
+                        labels=targets_all,
+                        theme='viridis',
+                        background='white',
+                        width=800,
+                        height=600
+                    )
+                    buf_mean = io.BytesIO()
+                    fig_mean.savefig(buf_mean, format='png', bbox_inches='tight')
+                    buf_mean.seek(0)
+                    run[f"visuals/umap_latent_mean_epoch_{epoch+1}"].append(
+                        neptune.types.File.from_content(buf_mean.getvalue(), extension='png'))
+                    plt.close(fig_mean)
+
     val_loss = running_loss / len(val_loader.dataset)
     
     if scheduler is not None:
