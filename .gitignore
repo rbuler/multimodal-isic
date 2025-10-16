@@ -5,3 +5,6 @@ __pycache__/
 /ConvMAE/
 best_ae_model_cuda*.pth
 /models
+out_*.log
+output_*.png
+config*.yml
