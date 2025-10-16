@@ -203,7 +203,6 @@ for epoch in range(num_epochs):
         loss.backward()
         optimizer.step()
         running_loss += loss.item() * images.size(0)
-        break
     train_loss = running_loss / len(train_loader.dataset)
     
     ae_model.eval()
@@ -214,67 +213,50 @@ for epoch in range(num_epochs):
             images = batch['image'].to(device)
             loss, _, _ = ae_model(images, mask_ratio=eval_mask_ratio)
             running_loss += loss.item() * images.size(0)
-
-            # collect pooled latents and targets for UMAP visualization when needed
-            # change to log every 10 epochs
-            if epoch == num_epochs - 1:
+            if epoch % 2 == 0 or epoch == num_epochs - 1:
                 latent, _, _ = ae_model.forward_encoder(images, mask_ratio=0.0)
-                latent_pooled_max = torch.max(latent, dim=1).values  # (B, D)
-                latent_pooled_mean = torch.mean(latent, dim=1)       # (B, D)
+                latent_pooled_max = torch.max(latent, dim=1).values.detach().cpu()
+                latent_pooled_mean = torch.mean(latent, dim=1).detach().cpu()
                 latent_max_list.append(latent_pooled_max.cpu())
                 latent_mean_list.append(latent_pooled_mean.cpu())
                 targets = batch['target']
-                if targets is not None:
-                    target_list.append(targets.cpu())
-        if epoch == num_epochs - 1:
-            if latent_max_list and target_list:
-                latent_max_all = torch.cat(latent_max_list, dim=0).numpy()
-                latent_mean_all = torch.cat(latent_mean_list, dim=0).numpy()
-                targets_all = torch.cat(target_list, dim=0).numpy()
+                target_list.append(targets.cpu())
 
+        if epoch % 2 == 0 or epoch == num_epochs - 1:
+            latent_max_all = torch.cat(latent_max_list, dim=0).numpy()
+            latent_mean_all = torch.cat(latent_mean_list, dim=0).numpy()
+            targets_all = torch.cat(target_list, dim=0).numpy()
 
-                # TODO visualize with UMAP and log to Neptune
-                ## optimize cpu memory usage when logging every 10 epochs
-                ## because it works slowly
+            reducer_max = umap.UMAP(n_components=2, random_state=seed)
+            reducer_mean = umap.UMAP(n_components=2, random_state=seed)
+            emb_max = reducer_max.fit_transform(latent_max_all)
+            emb_mean = reducer_mean.fit_transform(latent_mean_all)
 
-                reducer_max = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
-                embedding_max = reducer_max.fit_transform(latent_max_all)
-                reducer_mean = umap.UMAP(random_state=seed, n_neighbors=15, min_dist=0.1)
-                embedding_mean = reducer_mean.fit_transform(latent_mean_all)
+            def _plot_and_log(emb, name):
+                fig, ax = plt.subplots(figsize=(6, 6))
+                unique_labels = np.unique(targets_all)
+                cmap = plt.get_cmap('tab10')
+                for i, lbl in enumerate(unique_labels):
+                    mask = targets_all == lbl
+                    ax.scatter(emb[mask, 0], emb[mask, 1], s=5, color=cmap(i % 10), label=str(int(lbl)), alpha=0.8)
+                ax.set_title(f"{name} UMAP (epoch {epoch})")
+                ax.axis('off')
+                ax.legend(title='class', markerscale=3, fontsize='small', bbox_to_anchor=(1.05, 1), loc='upper left')
+                plt.tight_layout()
+                buf = io.BytesIO()
+                plt.savefig(buf, format='png', dpi=150)
+                buf.seek(0)
+                if config.get("neptune"):
+                    run[f"visuals/umap/{name.lower()}"].append(neptune.types.File.from_content(buf.getvalue(), extension='png'))
+                    run.sync()
+                buf.close()
+                plt.close(fig)
 
-                # plot using matplotlib
-
-                if config["neptune"]:
-                    fig_max = umap.plot.points(
-                                reducer_max,
-                                labels=targets_all,
-                                theme='viridis',
-                                background='white',
-                                width=800,
-                                height=600
-                            )
-                    buf_max = io.BytesIO()
-                    fig_max.savefig(buf_max, format='png', bbox_inches='tight')
-                    buf_max.seek(0)
-                    run[f"visuals/umap_latent_max_epoch_{epoch+1}"].append(
-                        neptune.types.File.from_content(buf_max.getvalue(), extension='png'))
-                    plt.close(fig_max)
-
-                    # Mean pooled latent
-                    fig_mean = umap.plot.points(
-                        reducer_mean,
-                        labels=targets_all,
-                        theme='viridis',
-                        background='white',
-                        width=800,
-                        height=600
-                    )
-                    buf_mean = io.BytesIO()
-                    fig_mean.savefig(buf_mean, format='png', bbox_inches='tight')
-                    buf_mean.seek(0)
-                    run[f"visuals/umap_latent_mean_epoch_{epoch+1}"].append(
-                        neptune.types.File.from_content(buf_mean.getvalue(), extension='png'))
-                    plt.close(fig_mean)
+            _plot_and_log(emb_max, "MaxPooled")
+            _plot_and_log(emb_mean, "MeanPooled")
+            del latent_max_all, latent_mean_all, targets_all
+            del reducer_max, reducer_mean, emb_max, emb_mean
+            gc.collect()
 
     val_loss = running_loss / len(val_loader.dataset)
     
@@ -350,11 +332,6 @@ for epoch in range(num_epochs):
 
 
 # %%
-
-
-
-
-
 # after training forward pass thorugh encoder only with mask_ratio == 0
 # ae.model.eval()
 # with torch.no_grad():
