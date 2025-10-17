@@ -1,55 +1,28 @@
 # %%
-import gc
 import os
+import io
+import sys
 import copy
 import torch
 import yaml
 import uuid
-import typing
 import neptune
-import argparse
 import numpy as np
 import pandas as pd
-import torch.nn as nn
-import torch.optim as optim
 import albumentations as A
-import umap
-import umap.plot as umap_plot
 from dataset import DermDataset
 from torch.utils.data import DataLoader
 from albumentations.pytorch import ToTensorV2
 from torch.utils.data import WeightedRandomSampler
 from sklearn.model_selection import StratifiedKFold
 import matplotlib.pyplot as plt
-import io
-import sys
+from utils import concat_patch_moments, get_args_parser
+from utils import visualize_latent_space, visualize_model_outputs
+
 if not hasattr(np, 'float'):
     np.float = float
 sys.path.append("ConvMAE")
 from ConvMAE.models_convmae import convmae_convvit_base_patch16_dec512d8b
-
-
-def lr_lambda(current_epoch: int):
-    base_lr = config['training_plan']['parameters']['lr']
-    warmup_epochs = config['training_plan']['parameters']['warmup_epochs']
-    total_epochs = config['training_plan']['parameters']['epochs']
-    if current_epoch < warmup_epochs:
-        return base_lr * (float(current_epoch + 1) / float(max(1, warmup_epochs)))
-    else:
-        progress = float(current_epoch + 1 - warmup_epochs) / float(max(1, total_epochs - warmup_epochs))
-        return base_lr * 0.5 * (1. + np.cos(np.pi * progress))
-
-
-# MAKE PARSER AND LOAD PARAMS FROM CONFIG FILE--------------------------------
-def get_args_parser(path: typing.Union[str, bytes, os.PathLike]):
-    help = '''path to .yml config file
-    specyfying datasets/training params'''
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", type=str,
-                        default=path,
-                        help=help)
-    return parser
 
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
@@ -63,7 +36,6 @@ if config["neptune"]:
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 df_train_val = pd.read_pickle(config['dir']['df'])
 df_test = pd.read_pickle(config['dir']['df_test'])
-
 
 # %%
 use_isic2019 = True
@@ -111,7 +83,7 @@ if use_isic2019:
             df_train_val[column] = df_train_val[column].fillna(most_frequent)
 # %%
 train_transform = A.Compose([
-    A.Resize(224,224),
+    # A.Resize(224,224), # not needed with RandomResizedCrop?
     A.RandomResizedCrop(size=(224, 224), scale=(0.5, 1.0), ratio=(0.75, 1.33), p=1.0),
     A.HorizontalFlip(p=0.5),
     A.VerticalFlip(p=0.5),
@@ -176,19 +148,14 @@ optimizer = torch.optim.AdamW([
     {'params': decoder_params, 'lr': decoder_lr}
 ], betas=(0.9, 0.95), weight_decay=0.05)
 
-# scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
-# scheduler.step()
-scheduler = None
-
 mask_ratio = config['training_plan']['parameters']['masking_ratio']
 eval_mask_ratio = config['training_plan']['parameters']['eval_masking_ratio']
-include_lesion_mask = False
+include_lesion_mask = False  # be aware that lesion masks for isic2019 are not available
 
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
 best_val_loss=float('inf')
 best_model_state=None
-
 
 for epoch in range(num_epochs):
     ae_model.train()
@@ -207,116 +174,31 @@ for epoch in range(num_epochs):
     
     ae_model.eval()
     running_loss = 0.0
-    latent_max_list, latent_mean_list, target_list = [], [], []
+    latent_feats_list, target_list = [], []
     with torch.no_grad():
         for batch in val_loader:
             images = batch['image'].to(device)
             loss, _, _ = ae_model(images, mask_ratio=eval_mask_ratio)
             running_loss += loss.item() * images.size(0)
-            if epoch % 2 == 0 or epoch == num_epochs - 1:
+            if epoch % 10 == 0 or epoch == num_epochs - 1:
                 latent, _, _ = ae_model.forward_encoder(images, mask_ratio=0.0)
-                latent_pooled_max = torch.max(latent, dim=1).values.detach().cpu()
-                latent_pooled_mean = torch.mean(latent, dim=1).detach().cpu()
-                latent_max_list.append(latent_pooled_max.cpu())
-                latent_mean_list.append(latent_pooled_mean.cpu())
+                feats = concat_patch_moments(latent)  # (B, 6*D)
+                latent_feats_list.append(feats.cpu())
                 targets = batch['target']
                 target_list.append(targets.cpu())
 
-        if epoch % 2 == 0 or epoch == num_epochs - 1:
-            latent_max_all = torch.cat(latent_max_list, dim=0).numpy()
-            latent_mean_all = torch.cat(latent_mean_list, dim=0).numpy()
-            targets_all = torch.cat(target_list, dim=0).numpy()
-
-            reducer_max = umap.UMAP(n_components=2, random_state=seed)
-            reducer_mean = umap.UMAP(n_components=2, random_state=seed)
-            emb_max = reducer_max.fit_transform(latent_max_all)
-            emb_mean = reducer_mean.fit_transform(latent_mean_all)
-
-            def _plot_and_log(emb, name):
-                fig, ax = plt.subplots(figsize=(6, 6))
-                unique_labels = np.unique(targets_all)
-                cmap = plt.get_cmap('tab10')
-                for i, lbl in enumerate(unique_labels):
-                    mask = targets_all == lbl
-                    ax.scatter(emb[mask, 0], emb[mask, 1], s=5, color=cmap(i % 10), label=str(int(lbl)), alpha=0.8)
-                ax.set_title(f"{name} UMAP (epoch {epoch})")
-                ax.axis('off')
-                ax.legend(title='class', markerscale=3, fontsize='small', bbox_to_anchor=(1.05, 1), loc='upper left')
-                plt.tight_layout()
-                buf = io.BytesIO()
-                plt.savefig(buf, format='png', dpi=150)
-                buf.seek(0)
-                if config.get("neptune"):
-                    run[f"visuals/umap/{name.lower()}"].append(neptune.types.File.from_content(buf.getvalue(), extension='png'))
-                    run.sync()
-                buf.close()
-                plt.close(fig)
-
-            _plot_and_log(emb_max, "MaxPooled")
-            _plot_and_log(emb_mean, "MeanPooled")
-            del latent_max_all, latent_mean_all, targets_all
-            del reducer_max, reducer_mean, emb_max, emb_mean
-            gc.collect()
-
+        balance_classes = False
+        visualize_latent_space(config, run, seed, num_epochs, epoch, latent_feats_list, target_list, balance_classes=balance_classes)
     val_loss = running_loss / len(val_loader.dataset)
     
-    if scheduler is not None:
-        scheduler.step()
+
     print(f"Epoch [{epoch+1}/{num_epochs}], Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
 
     if config["neptune"]:
         run["train/loss"].append(train_loss)
         run["val/loss"].append(val_loss)
         
-        if epoch % 10 == 0 or epoch == num_epochs - 1:
-            with torch.no_grad():
-                batch = next(iter(val_loader))
-                for i in range(4):
-                    img = batch['image'][i:i+1].to(device)
-                    loss, pred, mask = ae_model(img, mask_ratio=mask_ratio)
-                    recon = ae_model.unpatchify(pred) if hasattr(ae_model, 'unpatchify') else pred
-                    img_vis = img.squeeze().cpu().numpy().transpose(1, 2, 0)
-                    recon_vis = recon.squeeze().cpu().numpy().transpose(1, 2, 0)
-                    mask_vis = mask.cpu().numpy()
-                    
-                    image_patches = ae_model.patchify(img).cpu().numpy() if hasattr(ae_model, 'patchify') else img.cpu().numpy()
-                    mask_expanded = mask_vis[..., None]
-                    unmasked_patches = image_patches * (1 - mask_expanded)
-                    binary_patches = mask_expanded * np.ones_like(image_patches)
-                    binary_image = ae_model.unpatchify(torch.tensor(binary_patches, device=device)).cpu().numpy()
-
-                    
-                    img_vis = img_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                    recon_vis = recon_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                    
-                    binary_image_vis = binary_image.squeeze().transpose(1, 2, 0)
-                    overlay_vis = recon_vis * binary_image_vis + img_vis * (1 - binary_image_vis)
-                
-                    img_vis = np.clip(img_vis, 0, 1)
-                    binary_image_vis = np.clip(binary_image_vis, 0, 1)
-                    recon_vis = np.clip(recon_vis, 0, 1)
-                    overlay_vis = np.clip(overlay_vis, 0, 1)
-
-                    fig, axs = plt.subplots(1, 4, figsize=(16, 4))
-                    axs[0].imshow(img_vis)
-                    axs[0].set_title("Original")
-                    axs[0].axis('off')
-                    axs[1].imshow(binary_image_vis, cmap='gray')
-                    axs[1].set_title("Mask")
-                    axs[1].axis('off')
-                    axs[2].imshow(recon_vis)
-                    axs[2].set_title("Reconstruction")
-                    axs[2].axis('off')
-                    axs[3].imshow(overlay_vis)
-                    axs[3].set_title("Overlay")
-                    axs[3].axis('off')
-
-                    plt.tight_layout()
-                    buf = io.BytesIO()
-                    plt.savefig(buf, format='png')
-                    buf.seek(0)
-                    run[f"visuals/image_comparison_{i+1}"].append(neptune.types.File.from_content(buf.getvalue(), extension='png'))
-                    plt.close(fig)
+        visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_epochs, epoch)
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
