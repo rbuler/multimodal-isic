@@ -200,6 +200,116 @@ print(f"PCA reduced dimensions from {X_patches.shape[1]} to {X_pca.shape[1]}")
 patch_level_latents_df['patch_latent_pca'] = list(X_pca)
 
 
+# %%
+# patient-wise classifier using multiple instance learning (MIL) to classify skin lesions
+# using the patch-level latent features extracted from ConvMAE
+
+grouped = patch_level_latents_df.groupby(["image_path", "target"])["patch_latent"]
+x_patient = []
+y_patient = []
+for (image_path, target), patches in grouped:
+    patches_array = np.vstack(patches.values)  # shape (num_patches, latent_dim)
+    x_patient.append(patches_array)
+    y_patient.append(target)
+
+# change lists to numpy arrays
+x_patient = np.array(x_patient, dtype=float)  # shape (num_patients,)
+y_patient = np.array(y_patient)  # shape (num_patients,)
+
+# %%
+class MILModel(nn.Module):
+    def __init__(self, input_dim, num_classes, hidden_dim=256, dropout=0.25):
+        super(MILModel, self).__init__()
+        # gated attention components
+        self.att_V = nn.Linear(input_dim, hidden_dim)
+        self.att_U = nn.Linear(input_dim, hidden_dim)
+        self.att_w = nn.Linear(hidden_dim, 1)
+
+        # classifier operating on the aggregated bag representation
+        self.classifier = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(256, num_classes)
+        )
+
+    def forward(self, x):
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        Vx = torch.tanh(self.att_V(x))       # (B, N, H)
+        Ux = torch.sigmoid(self.att_U(x))    # (B, N, H)
+        H = Vx * Ux                          # gated activation (B, N, H)
+        att_logits = self.att_w(H).squeeze(-1)   # (B, N)
+        att_weights = torch.softmax(att_logits, dim=1).unsqueeze(-1)  # (B, N, 1)
+        z = torch.sum(att_weights * x, dim=1)    # (B, D)
+        logits = self.classifier(z)              # (B, num_classes)
+        return logits
+
+mil_model = MILModel(input_dim=x_patient.shape[2], num_classes=len(np.unique(y_patient)))
+mil_model = mil_model.to(device)
+num_epochs = 1000
+x_train, x_val, y_train, y_val = train_test_split(x_patient, y_patient, test_size=0.2, random_state=seed, stratify=y_patient)
+class_counts = np.bincount(y_train)
+class_weights = 1.0 / (class_counts + 1e-6)
+class_weights = class_weights / class_weights.sum() * len(class_counts)
+class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
+criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+optimizer = torch.optim.Adam(mil_model.parameters(), lr=0.001)
+
+
+train_losses = []
+val_losses = []
+train_accuracies = []
+val_accuracies = []
+for epoch in range(num_epochs):
+    mil_model.train()
+    optimizer.zero_grad()
+    outputs = mil_model(torch.tensor(x_train, dtype=torch.float32).to(device))
+    loss = criterion(outputs, torch.tensor(y_train, dtype=torch.long).to(device))
+    loss.backward()
+    optimizer.step()
+    print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
+    train_losses.append(loss.item())
+    # balanced accuracy
+    _, predicted = torch.max(outputs.data, 1)
+    correct = (predicted.cpu().numpy() == y_train).astype(int)
+    train_acc = balanced_accuracy_score(y_train, predicted.cpu().numpy())
+    train_accuracies.append(train_acc)
+    # validate
+    mil_model.eval()
+    with torch.no_grad():
+        val_outputs = mil_model(torch.tensor(x_val, dtype=torch.float32).to(device))
+        val_loss = criterion(val_outputs, torch.tensor(y_val, dtype=torch.long).to(device))
+        val_losses.append(val_loss.item())
+        _, val_predicted = torch.max(val_outputs.data, 1)
+        val_correct = (val_predicted.cpu().numpy() == y_val).astype(int)
+        val_acc = balanced_accuracy_score(y_val, val_predicted.cpu().numpy())
+        val_accuracies.append(val_acc)
+        if val_acc >= max(val_accuracies):
+            print(f"Validation Loss: {val_loss.item():.4f}, Validation Balanced Accuracy: {val_acc:.4f}")
+        
+# plot train val loss curves
+plt.figure()
+plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
+plt.plot(range(1, num_epochs+1), val_losses, label='Val Loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss')
+plt.title('Train and Validation Loss Curves')
+plt.legend()
+plt.show()
+
+# plot train val balanced accuracy curves
+plt.figure()
+plt.plot(range(1, num_epochs+1), train_accuracies, label='Train Balanced Accuracy')
+plt.plot(range(1, num_epochs+1), val_accuracies, label='Val Balanced Accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Balanced Accuracy')
+plt.title('Train and Validation Balanced Accuracy')
+plt.legend()
+plt.show()
+
+# %%
+
 X_feat = np.vstack(patch_level_latents_df['patch_latent_pca'].values)
 y = patch_level_latents_df['target'].values
 
