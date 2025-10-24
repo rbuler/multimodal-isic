@@ -6,6 +6,9 @@ import torch.nn as nn
 import yaml
 import typing
 import neptune
+from tqdm import trange
+from tqdm import tqdm
+
 import umap
 import umap.plot as umap_plot
 from bokeh.io import output_file, save
@@ -200,16 +203,25 @@ print(f"PCA reduced dimensions from {X_patches.shape[1]} to {X_pca.shape[1]}")
 patch_level_latents_df['patch_latent_pca'] = list(X_pca)
 
 # %%
+# save df to pickle
+save = False
+load = True
+if save:
+    patch_level_latents_df.to_pickle("patch_level_latents_df.pkl")
+elif load:
+    patch_level_latents_df = pd.read_pickle("patch_level_latents_df.pkl")
+
+# %%
 
 X_feat = np.vstack(patch_level_latents_df['patch_latent_pca'].values)
 y = patch_level_latents_df['target'].values
 
-k_same = 5
-k_other = 10
+k_same = 15
+k_other = 15
 
 scores = np.zeros(len(patch_level_latents_df))
 
-for cls in np.unique(y):
+for cls in tqdm(np.unique(y), desc="Prototype scoring"):
     idx_cls = np.where(y == cls)[0]
     idx_other = np.where(y != cls)[0]
     X_cls = X_feat[idx_cls]
@@ -231,19 +243,36 @@ patch_level_latents_df['proto_score'] = scores
 print("Done computing prototype scores.")
 
 prototypes_idx = []
-alpha = 0.5
+alpha = 1.0
 proto_score_min = 1.05
-for cls in np.unique(y):
-    cls_idx = patch_level_latents_df.index[patch_level_latents_df['target'] == cls].tolist()
-    cls_scores = patch_level_latents_df.loc[cls_idx, 'proto_score']
+for cls in tqdm(np.unique(y), desc="Prototype selection"):
+    cls_mask = patch_level_latents_df['target'] == cls
+    cls_df = patch_level_latents_df.loc[cls_mask]
+    cls_scores = cls_df['proto_score']
     mu_cls = cls_scores.mean()
     sigma_cls = cls_scores.std()
+    alpha = 1.0 if cls != 5 else 1.5
     proto_score_thresh = mu_cls + alpha * sigma_cls
     final_thresh = max(proto_score_min, proto_score_thresh)
-    print(f"Class {cls}: Prototype score threshold: {final_thresh:.4f}")
+    tqdm.write(f"Class {cls}: Prototype score threshold: {final_thresh:.4f}")
 
-    cls_prototypes = cls_scores[cls_scores >= final_thresh].index.tolist()
-    prototypes_idx.extend(cls_prototypes)
+    cls_prototypes = set(cls_scores[cls_scores >= final_thresh].index.tolist())
+
+    # ensure minimum of 4 prototypes per image_path for this class
+    groups = cls_df.groupby('image_path').groups
+    for image_path, group_idxs in groups.items():
+        group_idxs = list(group_idxs)
+        selected_for_img = [i for i in group_idxs if i in cls_prototypes]
+        if len(selected_for_img) < 4:
+            sorted_by_score = cls_scores.loc[group_idxs].sort_values(ascending=False).index.tolist()
+            for idx in sorted_by_score:
+                if idx not in cls_prototypes:
+                    cls_prototypes.add(idx)
+                    selected_for_img.append(idx)
+                if len(selected_for_img) >= 4:
+                    break
+
+    prototypes_idx.extend(list(cls_prototypes))
 
 patch_level_latents_df = patch_level_latents_df.loc[prototypes_idx]
 
@@ -251,208 +280,3 @@ print(patch_level_latents_df['target'].value_counts())
 print(len(patch_level_latents_df['image_path'].unique()))
 print(patch_level_latents_df.groupby('target')['image_path'].nunique())
 
-# %% apply self-organizing map (SOM) to cluster patch-level latents
-# with 100 by 100 grid
-from minisom import MiniSom
-from tqdm import trange
-
-
-# TODO change to SOMPY 
-# use batch training for faster convergence
-# set n_jobs=-1 for parallel processing if possible
-
-seed = 42
-np.random.seed(seed)
-
-X_raw = np.vstack(patch_level_latents_df["patch_latent"].values)
-X_pca = np.vstack(patch_level_latents_df["patch_latent_pca"].values)
-Y = patch_level_latents_df["target"].values
-
-X = X_pca
-
-# take 1% of data for faster training
-# sample_size = max(1, X.shape[0] // 100)
-# sample_indices = np.random.choice(X.shape[0], size=sample_size, replace=False)
-# X = X[sample_indices]
-# Y = Y[sample_indices]
-
-som_size = (100, 100)
-som = MiniSom(som_size[0], som_size[1], X.shape[1], sigma=5, learning_rate=0.5, random_seed=seed)
-som.random_weights_init(X)
-
-n_epochs = 50
-plot_every = 1  # plot every n epochs
-
-def plot_som_progress(som, X, y, epoch):
-    w_x, w_y = zip(*[som.winner(d) for d in X])
-    w_x = np.array(w_x)
-    w_y = np.array(w_y)
-
-    plt.figure(figsize=(10, 9))
-    plt.pcolor(som.distance_map().T, cmap='bone_r', alpha=.2)
-    plt.colorbar()
-
-    for c in np.unique(y):
-        idx_target = y==c
-        plt.scatter(w_x[idx_target]+.5+(np.random.rand(np.sum(idx_target))-.5)*.8,
-                    w_y[idx_target]+.5+(np.random.rand(np.sum(idx_target))-.5)*.8, 
-                    s=50, label=c)
-    plt.legend(loc='upper right')
-    plt.grid()
-    plt.show()
-    
-for epoch in trange(1, n_epochs + 1):
-    som.train_random(X, len(X) // 2)  # train on half the data per epoch
-
-    if epoch % plot_every == 0 or epoch == 1:
-        plot_som_progress(som, X, Y, epoch)
-
-# %%
-# TODO done
-# UMAP on patch-level latents for both raw and PCA-reduced features
-
-# X_raw = np.vstack(patch_level_latents_df["patch_latent"].values)
-# X_pca = np.vstack(patch_level_latents_df["patch_latent_pca"].values)
-
-# reducer_raw = umap.UMAP(random_state=seed, n_neighbors=50, min_dist=0.4)
-# embedding_raw = reducer_raw.fit_transform(X_raw)
-# reducer_pca = umap.UMAP(random_state=seed, n_neighbors=50, min_dist=0.4)
-# embedding_pca = reducer_pca.fit_transform(X_pca)
-
-# plt.figure(figsize=(8, 6))
-# unique_labels = sorted(set(patch_level_latents_df["target"].values))
-# for i, lab in enumerate(unique_labels):
-#     mask = patch_level_latents_df["target"].values == lab
-#     plt.scatter(
-#         embedding_raw[mask, 0], embedding_raw[mask, 1],
-#         s=0.1, label=lab
-#     )
-# plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
-# plt.title("UMAP Projection of Patch-level Latent Space (Raw Features)")
-# plt.tight_layout()
-# plt.show()
-
-# plt.figure(figsize=(8, 6))
-# unique_labels = sorted(set(patch_level_latents_df["target"].values))
-# for i, lab in enumerate(unique_labels):
-#     mask = patch_level_latents_df["target"].values == lab
-#     plt.scatter(
-#         embedding_pca[mask, 0], embedding_pca[mask, 1],
-#         s=0.1, label=lab
-#     )
-# plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left', fontsize=8)
-# plt.title("UMAP Projection of Patch-level Latent Space (PCA-reduced Features)")
-# plt.tight_layout()
-# plt.show()
-
-# %%
-# TODO done
-# train MIL model on patch-level latents
-
-# grouped = patch_level_latents_df.groupby(["image_path", "target"])["patch_latent"]
-# x_patient = []
-# y_patient = []
-# for (image_path, target), patches in grouped:
-#     patches_array = np.vstack(patches.values)  # shape (num_patches, latent_dim)
-#     x_patient.append(patches_array)
-#     y_patient.append(target)
-
-# x_patient = np.array(x_patient, dtype=float)  # shape (num_patients,)
-# y_patient = np.array(y_patient)  # shape (num_patients,)
-
-# class MILModel(nn.Module):
-#     def __init__(self, input_dim, num_classes, hidden_dim=256, dropout=0.25):
-#         super(MILModel, self).__init__()
-#         # gated attention components
-#         self.att_V = nn.Linear(input_dim, hidden_dim)
-#         self.att_U = nn.Linear(input_dim, hidden_dim)
-#         self.att_w = nn.Linear(hidden_dim, 1)
-
-#         # classifier operating on the aggregated bag representation
-#         self.classifier = nn.Sequential(
-#             nn.Linear(input_dim, 256),
-#             nn.ReLU(inplace=True),
-#             nn.Dropout(dropout),
-#             nn.Linear(256, num_classes)
-#         )
-
-#     def forward(self, x):
-#         if x.dim() == 2:
-#             x = x.unsqueeze(1)
-#         Vx = torch.tanh(self.att_V(x))       # (B, N, H)
-#         Ux = torch.sigmoid(self.att_U(x))    # (B, N, H)
-#         H = Vx * Ux                          # gated activation (B, N, H)
-#         att_logits = self.att_w(H).squeeze(-1)   # (B, N)
-#         att_weights = torch.softmax(att_logits, dim=1).unsqueeze(-1)  # (B, N, 1)
-#         z = torch.sum(att_weights * x, dim=1)    # (B, D)
-#         logits = self.classifier(z)              # (B, num_classes)
-#         return logits
-
-# mil_model = MILModel(input_dim=x_patient.shape[2], num_classes=len(np.unique(y_patient)))
-# mil_model = mil_model.to(device)
-# num_epochs = 1000
-
-# # reset seed for reproducibility
-# np.random.seed(seed)
-# torch.manual_seed(seed)
-# x_train, x_val, y_train, y_val = train_test_split(x_patient, y_patient, test_size=0.2, random_state=seed, stratify=y_patient)
-# class_counts = np.bincount(y_train)
-# class_weights = 1.0 / (class_counts + 1e-6)
-# class_weights = class_weights / class_weights.sum() * len(class_counts)
-# class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32).to(device)
-# criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-# optimizer = torch.optim.Adam(mil_model.parameters(), lr=0.001)
-
-
-# train_losses = []
-# val_losses = []
-# train_accuracies = []
-# val_accuracies = []
-# for epoch in range(num_epochs):
-#     mil_model.train()
-#     optimizer.zero_grad()
-#     outputs = mil_model(torch.tensor(x_train, dtype=torch.float32).to(device))
-#     loss = criterion(outputs, torch.tensor(y_train, dtype=torch.long).to(device))
-#     loss.backward()
-#     optimizer.step()
-#     print(f"Epoch {epoch+1}/{num_epochs}, Loss: {loss.item():.4f}")
-#     train_losses.append(loss.item())
-#     _, predicted = torch.max(outputs.data, 1)
-#     correct = (predicted.cpu().numpy() == y_train).astype(int)
-#     train_acc = balanced_accuracy_score(y_train, predicted.cpu().numpy())
-#     train_accuracies.append(train_acc)
-
-
-#     mil_model.eval()
-#     with torch.no_grad():
-#         val_outputs = mil_model(torch.tensor(x_val, dtype=torch.float32).to(device))
-#         val_loss = criterion(val_outputs, torch.tensor(y_val, dtype=torch.long).to(device))
-#         val_losses.append(val_loss.item())
-#         _, val_predicted = torch.max(val_outputs.data, 1)
-#         val_correct = (val_predicted.cpu().numpy() == y_val).astype(int)
-#         # log two accuracies: overall and balanced
-#         val_acc = val_correct.sum() / len(y_val)        
-#         val_bacc = balanced_accuracy_score(y_val, val_predicted.cpu().numpy())
-#         val_accuracies.append(val_bacc)
-#         if val_bacc >= max(val_accuracies):
-#             print(f"Validation BAcc: {val_bacc:.4f}, Validation Acc: {val_acc:.4f}")
-            
-# # plot train val loss curves
-# plt.figure()
-# plt.plot(range(1, num_epochs+1), train_losses, label='Train Loss')
-# plt.plot(range(1, num_epochs+1), val_losses, label='Val Loss')
-# plt.xlabel('Epoch')
-# plt.ylabel('Loss')
-# plt.title('Train and Validation Loss Curves')
-# plt.legend()
-# plt.show()
-
-# # plot train val balanced accuracy curves
-# plt.figure()
-# plt.plot(range(1, num_epochs+1), train_accuracies, label='Train Balanced Accuracy')
-# plt.plot(range(1, num_epochs+1), val_accuracies, label='Val Balanced Accuracy')
-# plt.xlabel('Epoch')
-# plt.ylabel('Balanced Accuracy')
-# plt.title('Train and Validation Balanced Accuracy')
-# plt.legend()
-# plt.show()
