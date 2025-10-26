@@ -204,79 +204,8 @@ patch_level_latents_df['patch_latent_pca'] = list(X_pca)
 
 # %%
 # save df to pickle
-save = False
-load = True
+save = True
 if save:
     patch_level_latents_df.to_pickle("patch_level_latents_df.pkl")
-elif load:
-    patch_level_latents_df = pd.read_pickle("patch_level_latents_df.pkl")
-
 # %%
-
-X_feat = np.vstack(patch_level_latents_df['patch_latent_pca'].values)
-y = patch_level_latents_df['target'].values
-
-k_same = 15
-k_other = 15
-
-scores = np.zeros(len(patch_level_latents_df))
-
-for cls in tqdm(np.unique(y), desc="Prototype scoring"):
-    idx_cls = np.where(y == cls)[0]
-    idx_other = np.where(y != cls)[0]
-    X_cls = X_feat[idx_cls]
-    X_other = X_feat[idx_other]
-
-    nbrs_same = NearestNeighbors(n_neighbors=k_same+1).fit(X_cls)
-    d_same, _ = nbrs_same.kneighbors(X_cls)
-    intra = d_same[:,1:].mean(axis=1)
-
-    nbrs_other = NearestNeighbors(n_neighbors=k_other).fit(X_other)
-    d_other, _ = nbrs_other.kneighbors(X_cls)
-    inter = d_other.mean(axis=1)
-
-    scores_cls = inter / (intra + 1e-8)
-    scores[idx_cls] = scores_cls
-
-patch_level_latents_df['proto_score'] = scores
-
-print("Done computing prototype scores.")
-
-prototypes_idx = []
-alpha = 1.0
-proto_score_min = 1.05
-for cls in tqdm(np.unique(y), desc="Prototype selection"):
-    cls_mask = patch_level_latents_df['target'] == cls
-    cls_df = patch_level_latents_df.loc[cls_mask]
-    cls_scores = cls_df['proto_score']
-    mu_cls = cls_scores.mean()
-    sigma_cls = cls_scores.std()
-    alpha = 1.0 if cls != 5 else 1.5
-    proto_score_thresh = mu_cls + alpha * sigma_cls
-    final_thresh = max(proto_score_min, proto_score_thresh)
-    tqdm.write(f"Class {cls}: Prototype score threshold: {final_thresh:.4f}")
-
-    cls_prototypes = set(cls_scores[cls_scores >= final_thresh].index.tolist())
-
-    # ensure minimum of 4 prototypes per image_path for this class
-    groups = cls_df.groupby('image_path').groups
-    for image_path, group_idxs in groups.items():
-        group_idxs = list(group_idxs)
-        selected_for_img = [i for i in group_idxs if i in cls_prototypes]
-        if len(selected_for_img) < 4:
-            sorted_by_score = cls_scores.loc[group_idxs].sort_values(ascending=False).index.tolist()
-            for idx in sorted_by_score:
-                if idx not in cls_prototypes:
-                    cls_prototypes.add(idx)
-                    selected_for_img.append(idx)
-                if len(selected_for_img) >= 4:
-                    break
-
-    prototypes_idx.extend(list(cls_prototypes))
-
-patch_level_latents_df = patch_level_latents_df.loc[prototypes_idx]
-
-print(patch_level_latents_df['target'].value_counts())
-print(len(patch_level_latents_df['image_path'].unique()))
-print(patch_level_latents_df.groupby('target')['image_path'].nunique())
-
+print("Finished saving patch-level latents.")
