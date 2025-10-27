@@ -111,69 +111,86 @@ latent_pooled = []
 latent_raw = []
 
 with torch.no_grad():
-    for batch in train_val_loader:
-        images = batch['image'].to(device)
-        image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
-        latent, _, ids_restore = ae_model(images, mask_ratio=0)
+    def extract_latents(loader):
+        pooled_list = []
+        raw_list = []
+        for batch in loader:
+            images = batch['image'].to(device)
+            image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
+            latent, _, ids_restore = ae_model(images, mask_ratio=0)
 
-        latent_pooled_max = torch.max(latent, dim=1).values
-        latent_pooled_mean = torch.mean(latent, dim=1)
+            latent_pooled_max = torch.max(latent, dim=1).values
+            latent_pooled_mean = torch.mean(latent, dim=1)
 
-        pooled_df = pd.DataFrame({
-            'image_path': image_path,
-            'segmentation_path': segmentation_path,
-            'target': batch['target'].numpy(),
-            'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
-            'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy()),
-            'ids_restore': list(ids_restore.cpu().numpy())
-        })
-        latent_pooled.append(pooled_df)
+            pooled_df = pd.DataFrame({
+                'image_path': image_path,
+                'segmentation_path': segmentation_path,
+                'target': batch['target'].numpy(),
+                'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
+                'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy()),
+                'ids_restore': list(ids_restore.cpu().numpy())
+            })
+            pooled_list.append(pooled_df)
 
-        # skin lesion mask (supports (B, H, W) or (B, 1, H, W))
-        mask = batch['mask'].to(device)
-        if mask.dim() == 3:
-            mask = mask.unsqueeze(1)  # (B,1,H,W)
+            # skin lesion mask (supports (B, H, W) or (B, 1, H, W))
+            mask = batch['mask'].to(device)
+            if mask.dim() == 3:
+                mask = mask.unsqueeze(1)  # (B,1,H,W)
 
-        # divide image into 16x16 patches and find which patches overlap with lesion mask
-        B, _, H, W = mask.shape
-        patch_size = 16
-        mask_patches = mask.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)  # (B,1,H/16,W/16,16,16)
-        mask_patches = mask_patches.contiguous().view(B, 1, H // patch_size, W // patch_size, -1)  # (B,1,H/16,W/16,256)
-        mask_patches = mask_patches.sum(dim=-1)  # (B,1,H/16,W/16)
-        mask_patches = (mask_patches > 0).squeeze(1)  # (B,H/16,W/16), bool tensor indicating if patch overlaps with lesion
+            # divide image into 16x16 patches and find which patches overlap with lesion mask
+            B, _, H, W = mask.shape
+            patch_size = 16
+            mask_patches = mask.unfold(2, patch_size, patch_size).unfold(3, patch_size, patch_size)  # (B,1,H/16,W/16,16,16)
+            mask_patches = mask_patches.contiguous().view(B, 1, H // patch_size, W // patch_size, -1)  # (B,1,H/16,W/16,256)
+            mask_patches = mask_patches.sum(dim=-1)  # (B,1,H/16,W/16)
+            mask_patches = (mask_patches > 0).squeeze(1)  # (B,H/16,W/16), bool tensor indicating if patch overlaps with lesion
 
-        raw_df = pd.DataFrame({
-            'image_path': image_path,
-            'segmentation_path': segmentation_path,
-            'target': batch['target'].numpy(),
-            'latent': list(latent.cpu().numpy()),
-            'ids_restore': list(ids_restore.cpu().numpy()),
-            'lesion_mask_patches': list(mask_patches.cpu().numpy())
-        })
-        latent_raw.append(raw_df)
+            raw_df = pd.DataFrame({
+                'image_path': image_path,
+                'segmentation_path': segmentation_path,
+                'target': batch['target'].numpy(),
+                'latent': list(latent.cpu().numpy()),
+                'ids_restore': list(ids_restore.cpu().numpy()),
+                'lesion_mask_patches': list(mask_patches.cpu().numpy())
+            })
+            raw_list.append(raw_df)
 
-latent_pooled = pd.concat(latent_pooled, ignore_index=True) if len(latent_pooled) > 0 else pd.DataFrame()
-latent_raw = pd.concat(latent_raw, ignore_index=True) if len(latent_raw) > 0 else pd.DataFrame()
-# %%
-i = 0
-remove = True  # only keep patches that overlap with lesion mask
-patch_level_latents = []
+        pooled_df_all = pd.concat(pooled_list, ignore_index=True) if len(pooled_list) > 0 else pd.DataFrame()
+        raw_df_all = pd.concat(raw_list, ignore_index=True) if len(raw_list) > 0 else pd.DataFrame()
+        return pooled_df_all, raw_df_all
 
-for idx, row in latent_raw.iterrows():
-    image_path = row['image_path']
-    segmentation_path = row['segmentation_path']
-    target = row['target']
-    latent = row['latent']  # shape (196, 768)
-    ids_restore = row['ids_restore']  # shape (196,)
-    mask_patches = row['lesion_mask_patches']  # shape (196,)
+    # extract for train/val and test
+    latent_pooled_train, latent_raw_train = extract_latents(train_val_loader)
+    latent_pooled_test, latent_raw_test = extract_latents(test_loader)
 
-    mask_flat = np.asarray(mask_patches).ravel()  # (num_patches,)
-    for patch_idx in range(len(latent)):
-        patch_latent = np.asarray(latent[patch_idx])  # (768,)
-        patch_id = int(ids_restore[patch_idx])
-        
-        if remove:
-            if patch_id < mask_flat.size and mask_flat[patch_id]:
+# build patch-level latents from raw df
+def build_patch_level_df(latent_raw_df, remove=True):
+    patch_level_latents = []
+    count = 0
+    for idx, row in latent_raw_df.iterrows():
+        image_path = row['image_path']
+        segmentation_path = row['segmentation_path']
+        target = row['target']
+        latent = row['latent']  # shape (num_patches, dim)
+        ids_restore = row['ids_restore']  # shape (num_patches,)
+        mask_patches = row['lesion_mask_patches']  # shape (H/16, W/16) or flattened
+
+        mask_flat = np.asarray(mask_patches).ravel()  # (num_patches,)
+        for patch_idx in range(len(latent)):
+            patch_latent = np.asarray(latent[patch_idx])  # (dim,)
+            patch_id = int(ids_restore[patch_idx])
+
+            if remove:
+                if patch_id < mask_flat.size and mask_flat[patch_id]:
+                    patch_level_latents.append({
+                        'image_path': image_path,
+                        'segmentation_path': segmentation_path,
+                        'target': target,
+                        'patch_id': patch_id,
+                        'patch_latent': patch_latent
+                    })
+                    count += 1
+            else:
                 patch_level_latents.append({
                     'image_path': image_path,
                     'segmentation_path': segmentation_path,
@@ -181,31 +198,56 @@ for idx, row in latent_raw.iterrows():
                     'patch_id': patch_id,
                     'patch_latent': patch_latent
                 })
-                i += 1
-        else:
-            patch_level_latents.append({
-                'image_path': image_path,
-                'segmentation_path': segmentation_path,
-                'target': target,
-                'patch_id': patch_id,
-                'patch_latent': patch_latent
-            })
-            i += 1
-print(f"Total lesion-overlapping patches: {i}")
-patch_level_latents_df = pd.DataFrame(patch_level_latents)
-# %%
-X_patches = np.vstack(patch_level_latents_df["patch_latent"].values)
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X_patches)
-pca = PCA(n_components=0.90, whiten=True)
-X_pca = pca.fit_transform(X_scaled)
-print(f"PCA reduced dimensions from {X_patches.shape[1]} to {X_pca.shape[1]}")
-patch_level_latents_df['patch_latent_pca'] = list(X_pca)
+                count += 1
+    df = pd.DataFrame(patch_level_latents)
+    return df, count
 
+
+######### If remove background ##############
+remove = True  # only keep patches that overlap with lesion mask
+########
+
+
+patch_level_train_df, train_count = build_patch_level_df(latent_raw_train, remove=remove)
+patch_level_test_df, test_count = build_patch_level_df(latent_raw_test, remove=remove)
+
+print(f"Total lesion-overlapping patches (train_val): {train_count}")
+print(f"Total lesion-overlapping patches (test): {test_count}")
+
+if len(patch_level_train_df) > 0:
+    X_patches_train = np.vstack(patch_level_train_df["patch_latent"].values)
+    scaler = StandardScaler()
+    X_scaled_train = scaler.fit_transform(X_patches_train)
+    pca = PCA(n_components=0.90, whiten=True)
+    X_pca_train = pca.fit_transform(X_scaled_train)
+    print(f"PCA reduced dimensions from {X_patches_train.shape[1]} to {X_pca_train.shape[1]}")
+    patch_level_train_df['patch_latent_pca'] = list(X_pca_train)
+else:
+    patch_level_train_df['patch_latent_pca'] = []
+
+if len(patch_level_test_df) > 0:
+    if len(patch_level_train_df) == 0:
+        raise RuntimeError("No train patches to fit PCA. Cannot transform test patches.")
+    X_patches_test = np.vstack(patch_level_test_df["patch_latent"].values)
+    X_scaled_test = scaler.transform(X_patches_test)
+    X_pca_test = pca.transform(X_scaled_test)
+    patch_level_test_df['patch_latent_pca'] = list(X_pca_test)
+else:
+    patch_level_test_df['patch_latent_pca'] = []
+
+# SAVE DATAFRAMES ------------------------------------------------------
+save_files = True
+folder = 'dataframes_latents' 
+if not os.path.exists(folder):
+    os.makedirs(folder)
+
+if save_files:
+    patch_level_train_df.to_pickle(f"{folder}/patch_level_latents_train_df.pkl")
+    patch_level_test_df.to_pickle(f"{folder}/patch_level_latents_test_df.pkl")
+    latent_pooled_train.to_pickle(f"{folder}/latent_pooled_train_df.pkl")
+    latent_pooled_test.to_pickle(f"{folder}/latent_pooled_test_df.pkl")
+    latent_raw_train.to_pickle(f"{folder}/latent_raw_train_df.pkl")
+    latent_raw_test.to_pickle(f"{folder}/latent_raw_test_df.pkl")
+
+print("Finished saving train_val and test patch-level and pooled latents.")
 # %%
-# save df to pickle
-save = True
-if save:
-    patch_level_latents_df.to_pickle("patch_level_latents_df.pkl")
-# %%
-print("Finished saving patch-level latents.")
