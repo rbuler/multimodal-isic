@@ -96,7 +96,7 @@ def visualize_latent_space(config, run, seed, num_epochs, epoch, latent_feats_li
         gc.collect()
 
 
-def visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_epochs, epoch):
+def visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_epochs, epoch, norm_pixel_loss=False):
     if epoch % 10 == 0 or epoch == num_epochs - 1:
         with torch.no_grad():
             batch = next(iter(val_loader))
@@ -117,7 +117,12 @@ def visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_e
                     
                 img_vis = img_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
                 recon_vis = recon_vis * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-                    
+                
+                if norm_pixel_loss:
+                    mean, std = img_vis.mean(), img_vis.std()
+                    img_vis = (img_vis - mean) / (std + 1.e-6)
+                    recon_vis = (recon_vis - mean) / (std + 1.e-6)
+
                 binary_image_vis = binary_image.squeeze().transpose(1, 2, 0)
                 overlay_vis = recon_vis * binary_image_vis + img_vis * (1 - binary_image_vis)
                 
