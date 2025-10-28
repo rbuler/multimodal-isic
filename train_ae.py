@@ -79,8 +79,11 @@ if use_isic2019:
     columns_to_fill = ['segmentation_path', 'age', 'sex', 'localization', 'hair', 'ruler_marks', 'bubbles', 'vignette', 'frame', 'other', 'age_normalized', 'sex_encoded', 'loc_encoded']
     for column in columns_to_fill:
         if column in df_train_val.columns:
-            most_frequent = df_train_val[column].mode()[0]
-            df_train_val[column] = df_train_val[column].fillna(most_frequent)
+            if column in ['segmentation_path']:
+                df_train_val[column] = df_train_val[column].fillna('no_mask')
+            else:
+                most_frequent = df_train_val[column].mode()[0]
+                df_train_val[column] = df_train_val[column].fillna(most_frequent)
 # %%
 train_transform = A.Compose([
     # A.Resize(224,224), # not needed with RandomResizedCrop?
@@ -150,7 +153,7 @@ optimizer = torch.optim.AdamW([
 
 mask_ratio = config['training_plan']['parameters']['masking_ratio']
 eval_mask_ratio = config['training_plan']['parameters']['eval_masking_ratio']
-include_lesion_mask = False  # be aware that lesion masks for isic2019 are not available
+include_lesion_mask = config['training_plan']['parameters']['include_lesion_mask']
 
 # %%
 num_epochs=config['training_plan']['parameters']['epochs']
@@ -198,7 +201,7 @@ for epoch in range(num_epochs):
         run["train/loss"].append(train_loss)
         run["val/loss"].append(val_loss)
         
-        visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_epochs, epoch)
+        visualize_model_outputs(run, device, val_loader, ae_model, mask_ratio, num_epochs, epoch, norm_pixel_loss=norm_pix_loss)
 
     if val_loss < best_val_loss:
         best_val_loss = val_loss
