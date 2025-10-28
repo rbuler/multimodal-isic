@@ -1,3 +1,4 @@
+import os
 import cv2
 import torch
 import numpy as np
@@ -85,8 +86,11 @@ class DermDataset(Dataset):
 
     def preprocess_image_and_mask(self, image_path, mask_path, crop_size=450):
         image = cv2.imread(image_path)
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-
+        if mask_path == 'no_mask' or not os.path.exists(mask_path):
+            mask = np.zeros(image.shape[:2], dtype=np.uint8)
+        else:
+            mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        crop_size = min(image.shape[0], image.shape[1])
         cropped_image, cropped_mask = self.crop_centered_on_mask(image, mask, crop_size)
 
         cropped_image = Image.fromarray(cv2.cvtColor(cropped_image, cv2.COLOR_BGR2RGB))
