@@ -216,10 +216,8 @@ print(f"Total lesion-overlapping patches (test): {test_count}")
 
 if len(patch_level_train_df) > 0:
     X_patches_train = np.vstack(patch_level_train_df["patch_latent"].values)
-    scaler = StandardScaler()
-    X_scaled_train = scaler.fit_transform(X_patches_train)
-    pca = PCA(n_components=0.90, whiten=True)
-    X_pca_train = pca.fit_transform(X_scaled_train)
+    pca = PCA(n_components=0.90, whiten=False)
+    X_pca_train = pca.fit_transform(X_patches_train)
     print(f"PCA reduced dimensions from {X_patches_train.shape[1]} to {X_pca_train.shape[1]}")
     patch_level_train_df['patch_latent_pca'] = list(X_pca_train)
 else:
@@ -229,8 +227,7 @@ if len(patch_level_test_df) > 0:
     if len(patch_level_train_df) == 0:
         raise RuntimeError("No train patches to fit PCA. Cannot transform test patches.")
     X_patches_test = np.vstack(patch_level_test_df["patch_latent"].values)
-    X_scaled_test = scaler.transform(X_patches_test)
-    X_pca_test = pca.transform(X_scaled_test)
+    X_pca_test = pca.transform(X_patches_test)
     patch_level_test_df['patch_latent_pca'] = list(X_pca_test)
 else:
     patch_level_test_df['patch_latent_pca'] = []
