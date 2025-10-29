@@ -56,18 +56,13 @@ def visualize_latent_space(config, run, seed, num_epochs, epoch, latent_feats_li
             latent_feats_sel = latent_feats_all
             targets_sel = targets_all
 
-        scaler = StandardScaler()
-        latent_scaled = scaler.fit_transform(latent_feats_sel)  # shape (M, 6*D)
-
-            # PCA to 512 (but no more than n_samples and no more than n_features)
-        n_samples, n_features = latent_scaled.shape
-        pca_n_components = min(512, n_samples, n_features)
-        pca = PCA(n_components=pca_n_components, random_state=seed)
-        latent_pca = pca.fit_transform(latent_scaled)  # (M, pca_n_components)
-
-        latent_pca = normalize(latent_pca, norm='l2')
-
-            # UMAP on PCA output
+        # reset seed for reproducibility
+        np.random.seed(seed)
+        pca = PCA(n_components=0.90, whiten=False)
+        latent_pca = pca.fit_transform(latent_feats_sel)  # (M, pca_n_components)
+        num_components = latent_pca.shape[1]
+        # reset seed for UMAP for reproducibility
+        np.random.seed(seed)
         reducer = umap.UMAP(n_components=2, random_state=seed)
         emb = reducer.fit_transform(latent_pca)  # (M, 2)
 
@@ -77,7 +72,7 @@ def visualize_latent_space(config, run, seed, num_epochs, epoch, latent_feats_li
         for i, lbl in enumerate(unique_labels):
             mask = targets_sel == lbl
             ax.scatter(emb[mask, 0], emb[mask, 1], s=5, color=cmap(i % 10), label=str(int(lbl)), alpha=0.8)
-        ax.set_title(f"MomentsConcat PCA{pca_n_components} UMAP (epoch {epoch})")
+        ax.set_title(f"MomentsConcat PCA{num_components} UMAP (epoch {epoch})")
         ax.axis('off')
         ax.legend(title='class', markerscale=3, fontsize='small', bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.tight_layout()
@@ -91,8 +86,8 @@ def visualize_latent_space(config, run, seed, num_epochs, epoch, latent_feats_li
         buf.close()
         plt.close(fig)
 
-        del latent_feats_all, latent_feats_sel, latent_scaled, latent_pca, emb
-        del reducer, pca, scaler
+        del latent_feats_all, latent_feats_sel, latent_pca, emb
+        del reducer, pca
         gc.collect()
 
 
