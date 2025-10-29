@@ -50,188 +50,112 @@ patch_level_latents_df_test = pd.read_pickle("dataframes_latents/patch_level_lat
 patch_level_latents_df_train['patient_id'] = patch_level_latents_df_train['image_path'].apply(lambda x: os.path.basename(x).split('_')[1].split('.')[0])
 patch_level_latents_df_test['patient_id'] = patch_level_latents_df_test['image_path'].apply(lambda x: os.path.basename(x).split('_')[1].split('.')[0])
 
-X_train = np.vstack(patch_level_latents_df_train['patch_latent'].values)
+X_train = np.vstack(patch_level_latents_df_train['patch_latent_pca'].values)
 y_train = patch_level_latents_df_train['target'].values
-X_test  = np.vstack(patch_level_latents_df_test['patch_latent'].values)
+X_test  = np.vstack(patch_level_latents_df_test['patch_latent_pca'].values)
 y_test  = patch_level_latents_df_test['target'].values
 # %%
 
-X_feat = X_train
-y = y_train
 
-scores = np.zeros(len(patch_level_latents_df_train), dtype=np.float32)
-pct_for_k = 0.01            # 1% of class size
-k_min = 3
+# GPU pipeline for 800k x 144 feature patches
+from cuml.manifold import UMAP
+from cuml.cluster import HDBSCAN
+from cuml.metrics import trustworthiness
+import cupy as cp
+
+X_gpu = cp.asarray(X_train)
+X_red = UMAP(n_neighbors=15, min_dist=0.05, n_components=20).fit_transform(X_gpu)
+score = trustworthiness(X_train, X_red)
+print(f"Trustworthiness of UMAP embedding: {score:.4f}")
+# %%
+clusters = HDBSCAN(min_cluster_size=50, min_samples=10).fit_predict(X_red)
+print(f"Number of clusters found: {len(np.unique(clusters)) - (1 if -1 in clusters else 0)}")
+
+# go back to CPU
+X_red_cpu = cp.asnumpy(X_red)
+clusters_cpu = cp.asnumpy(clusters)
+
+X_train = X_red_cpu[clusters_cpu != -1]
+y_train = y_train[clusters_cpu != -1]
+patch_level_latents_df_train = patch_level_latents_df_train.iloc[clusters_cpu != -1].reset_index(drop=True)
+patch_level_latents_df_train['cluster'] = clusters_cpu[clusters_cpu != -1]
+# %%
+# use patch_level_latents_df_train['cluster'] to group by clusters and compute scores within each cluster
+# patch_level_latents_df_train['target'] has the class label
+X_feat = np.vstack(patch_level_latents_df_train['patch_latent_pca'].values)
+y = patch_level_latents_df_train['target'].values
+clusters = patch_level_latents_df_train['cluster'].values
+
+same_counts = np.zeros(len(y), dtype=int)
+other_counts = np.zeros(len(y), dtype=int)
 eps = 1e-8
 
-for cls in np.unique(y):
-    idx_cls = np.where(y == cls)[0]
-    idx_other = np.where(y != cls)[0]
-    X_cls = X_feat[idx_cls]
-    X_other = X_feat[idx_other]
+for clust in np.unique(clusters):
+    idx_clust = np.where(clusters == clust)[0]
+    if idx_clust.size == 0:
+        continue
+    y_clust = y[idx_clust]
+    unique_vals, counts = np.unique(y_clust, return_counts=True)
+    count_map = dict(zip(unique_vals, counts))
+    cluster_size = len(idx_clust)
+    for local_i, global_i in enumerate(idx_clust):
+        cls = y_clust[local_i]
+        same = count_map.get(cls, 0) - 1  # exclude the point itself
+        other = cluster_size - same - 1
+        same_counts[global_i] = same
+        other_counts[global_i] = other
 
-    n_cls = len(X_cls)
-    n_other = len(X_other)
+# store counts and simple scores in the dataframe
+patch_level_latents_df_train['cluster_same_count'] = same_counts
+patch_level_latents_df_train['cluster_other_count'] = other_counts
+patch_level_latents_df_train['cluster_prop_same'] = (same_counts.astype(float) + eps) / (same_counts + other_counts + eps)
+patch_level_latents_df_train['cluster_ratio_same_other'] = (same_counts.astype(float) + eps) / (other_counts.astype(float) + eps)
 
-    k_calc = int(round(pct_for_k * n_cls))
-    k_same = max(k_min, k_calc)
-    k_same = min(k_same, 10000)
-    k_calc_o = int(round(pct_for_k * n_other))
-    k_other = max(1, k_calc_o)
-    k_other = min(k_other, 10000)
+# %%
+# drop all clusters with cluster_ratio_same_other less than 30
+df_filtered = patch_level_latents_df_train[patch_level_latents_df_train['cluster_ratio_same_other'] >= 30].reset_index(drop=True)
+X_feat = np.vstack(df_filtered['patch_latent_pca'].values)
+y = df_filtered['target'].values
 
-    nbrs_same = NearestNeighbors(n_neighbors=k_same + 1).fit(X_cls)
-    d_same, _ = nbrs_same.kneighbors(X_cls)
-    intra = d_same[:, 1:].mean(axis=1)
+# print 10 largest clusters after filtering
+print("10 largest clusters after filtering:")
+print(df_filtered['cluster'].value_counts().head(10))
 
-    nbrs_other = NearestNeighbors(n_neighbors=k_other).fit(X_other)
-    d_other, _ = nbrs_other.kneighbors(X_cls)
-    inter = d_other.mean(axis=1)
+# drop cluster 3163 and 2976 if they exist
+clusters_to_drop = [3163, 2976]
+df_filtered = df_filtered[~df_filtered['cluster'].isin(clusters_to_drop)].reset_index(drop=True)
+X_feat = np.vstack(df_filtered['patch_latent_pca'].values)
+y = df_filtered['target'].values
 
-    scores_cls = inter / (intra + eps)
-    scores[idx_cls] = scores_cls
-    print(f"Class {cls}: Prototype scores computed with {k_same} same-class and {k_other} other-class neighbors.")
-patch_level_latents_df_train['proto_score'] = scores
-print("Done computing prototype scores.")
+# drop from X_feat and y class 5
+mask = y != 5
+X_feat = X_feat[mask]
+y = y[mask]
 
-print(patch_level_latents_df_train['target'].value_counts())
-print(len(patch_level_latents_df_train['image_path'].unique()))
-print(patch_level_latents_df_train.groupby('target')['image_path'].nunique())
+# cuml umap on filtered data
+X_gpu = cp.asarray(X_feat)
+X_red = UMAP(n_neighbors=100, min_dist=0.9, n_components=2).fit_transform(X_gpu)
+score = trustworthiness(X_feat, cp.asnumpy(X_red))
+print(f"Trustworthiness of UMAP embedding after filtering: {score:.4f}")
+X_feat = cp.asnumpy(X_red)
 
-# %% 
-# Build patient-level bags for MIL: each patient -> up to n instances (top by proto_score).
-
-INSTANCES_PER_PATIENT = 24
-
-def build_patient_bags(df, instances_per_patient=INSTANCES_PER_PATIENT, train=True):
-    """
-    Returns: bags_list (list of torch.Tensor [num_instances, D]),
-             labels (torch.LongTensor [num_patients]),
-             patient_ids (list)
-    For train=True take up to instances_per_patient top patches by proto_score,
-    for train=False take all patches for each patient.
-    """
-    bags = []
-    labels = []
-    pids = []
-    for pid, grp in df.groupby('patient_id'):
-        latents = np.vstack(grp.sort_values('proto_score', ascending=False)['patch_latent_pca'].values)
-        if train:
-            latents = latents[:instances_per_patient]
-        bags.append(torch.from_numpy(latents).float())
-        labels.append(int(grp['target'].iloc[0]))
-        pids.append(pid)
-    labels = torch.tensor(labels, dtype=torch.long)
-    return bags, labels, pids
-
-bags_train_list, labels_train, pids_train = build_patient_bags(patch_level_latents_df_train, INSTANCES_PER_PATIENT, train=True)
-bags_test_list, labels_test, pids_test = build_patient_bags(patch_level_latents_df_test, INSTANCES_PER_PATIENT, train=False)
-
-class BagDataset(torch.utils.data.Dataset):
-    def __init__(self, bags, labels, pids):
-        self.bags = bags
-        self.labels = labels
-        self.pids = pids
-    def __len__(self):
-        return len(self.bags)
-    def __getitem__(self, idx):
-        return self.bags[idx], self.labels[idx], self.pids[idx]
-
-train_ds = BagDataset(bags_train_list, labels_train, pids_train)
-test_ds  = BagDataset(bags_test_list,  labels_test,  pids_test)
-
-def collate_pad(batch):
-    bags, labels, pids = zip(*batch)
-    lengths = [b.shape[0] for b in bags]
-    max_len = max(lengths)
-    D = bags[0].shape[1]
-    padded = torch.zeros(len(bags), max_len, D, dtype=bags[0].dtype)
-    mask = torch.zeros(len(bags), max_len, dtype=torch.bool)
-    for i, b in enumerate(bags):
-        L = b.shape[0]
-        padded[i, :L] = b
-        mask[i, :L] = True
-    labels = torch.stack([torch.tensor(l, dtype=torch.long) if not isinstance(l, torch.Tensor) else l for l in labels])
-    return padded.to(device), labels.to(device), mask.to(device), list(pids)
-
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=256, shuffle=True, collate_fn=collate_pad)
-val_loader   = torch.utils.data.DataLoader(test_ds,  batch_size=256, shuffle=False, collate_fn=collate_pad)
-
-
-class MILAttentionClassifier(torch.nn.Module):
-    def __init__(self, input_dim, instance_hidden=128, embed_dim=128, num_classes=7, dropout=0.5):
-        # ...existing code...
-        self.classifier = torch.nn.Linear(embed_dim, num_classes)
-
-    def forward(self, bags, mask=None):
-        """
-        bags: (B, M, D) padded tensor
-        mask: (B, M) boolean tensor where True marks valid instances
-        """
-        B, M, D = bags.shape
-        x = bags.view(B * M, D)
-        inst_emb = self.instance_encoder(x)
-        E = inst_emb.shape[1]
-        inst_emb = inst_emb.view(B, M, E)          # (B, M, E)
-
-        V = torch.tanh(self.attn_V(inst_emb))      # (B, M, E)
-        U = torch.sigmoid(self.attn_U(inst_emb))   # (B, M, E)
-        gated = V * U                              # (B, M, E)
-
-        attn_logits = self.attn_w(gated).squeeze(-1)  # (B, M)
-        if mask is not None:
-            # mask is True for valid positions; set logits of padded positions to large negative
-            attn_logits = attn_logits.masked_fill(~mask, float('-1e9'))
-        attn_w = torch.softmax(attn_logits, dim=1)    # (B, M)
-        attn_w_unsq = attn_w.unsqueeze(-1)            # (B, M, 1)
-        pooled = (attn_w_unsq * inst_emb).sum(dim=1)  # (B, E)
-
-        logits = self.classifier(pooled)              # (B, num_classes)
-        return logits, attn_w
-
-
-model = MILAttentionClassifier(input_dim=patch_level_latents_df_train['patch_latent_pca'].iloc[0].shape[0],
-                               instance_hidden=128,
-                               embed_dim=128,
-                               num_classes=len(np.unique(y)),
-                               dropout=0.5).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-criterion = torch.nn.CrossEntropyLoss()
-epochs = 50
-
-for epoch in range(epochs):
-    model.train()
-    for bags, labels, mask, pids in train_loader:
-        optimizer.zero_grad()
-        logits, attn_w = model(bags, mask)
-        loss = criterion(logits, labels)
-        loss.backward()
-        optimizer.step()
-
-    print(f"Epoch {epoch + 1}/{epochs}, Loss: {loss.item()}")
-    model.eval()
-    all_preds = []
-    all_labels = []
-    with torch.no_grad():
-        for bags, labels, mask, pids in val_loader:
-            logits, attn_w = model(bags, mask)
-            preds = torch.argmax(logits, dim=1)
-            all_preds.append(preds.cpu())
-            all_labels.append(labels.cpu())
-    all_preds = torch.cat(all_preds)
-    all_labels = torch.cat(all_labels)
-    bal_acc = balanced_accuracy_score(all_labels.numpy(), all_preds.numpy())
-    print(f"Validation Balanced Accuracy: {bal_acc:.4f}")
-    
-
+# plot umap of filtered prototypes
+plt.figure(figsize=(8, 6))
+plt.scatter(X_feat[:, 0], X_feat[:, 1], c=y, s=1, cmap='tab10', alpha=0.8)
+plt.colorbar(ticks=np.arange(len(np.unique(y))))
+plt.title("2D UMAP Projection of Filtered Prototypes Colored by Class")
+plt.xlabel("UMAP dim 1")
+plt.ylabel("UMAP dim 2")
+plt.tight_layout()
+plt.show()
 # %%
 # umap to visualize prototypes, 2D/3D depending on n_components
 
 n_neighbors = [25]
-min_dist = [0.9]
+min_dist = [0.1]
 n_components = 2
-X = None
-y = None
+X = X_feat
+y = y
 
 for n in n_neighbors:
     for md in min_dist:
