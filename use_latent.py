@@ -14,7 +14,7 @@ from sklearn.metrics import roc_auc_score, accuracy_score
 from save_latent import extract_latents
 from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
-
+from utils import get_args_parser
 class AttentionMIL(nn.Module):
     def __init__(self, input_dim=76, hidden_dim=128, att_dim=64, num_classes=7):
         super().__init__()
@@ -47,17 +47,6 @@ class PatientDataset(Dataset):
     def __getitem__(self, idx):
         return self.features[idx], torch.tensor(self.labels[idx], dtype=torch.float32)
 
-
-# MAKE PARSER AND LOAD PARAMS FROM CONFIG FILE--------------------------------
-def get_args_parser(path: typing.Union[str, bytes, os.PathLike]):
-    help = '''path to .yml config file
-    specyfying datasets/training params'''
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config_path", type=str,
-                        default=path,
-                        help=help)
-    return parser
 
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
@@ -167,7 +156,7 @@ for idx, row in runs_df.iterrows():
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
     criterion = nn.CrossEntropyLoss()
 
-    num_epochs = 1
+    num_epochs = 100
     best_bacc = -np.inf
     best_metrics = { 'micro': np.nan, 'macro_p': np.nan, 'macro_r': np.nan, 'macro_f1': np.nan,
                      'weighted_p': np.nan, 'weighted_r': np.nan, 'weighted_f1': np.nan }
