@@ -15,6 +15,8 @@ from save_latent import extract_latents
 from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from utils import get_args_parser
+from datetime import datetime
+
 class AttentionMIL(nn.Module):
     def __init__(self, input_dim=76, hidden_dim=128, att_dim=64, num_classes=7):
         super().__init__()
@@ -55,7 +57,9 @@ with open(args.config_path) as file:
 
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
-runs_df = fetch_experiment(experiment_ids=list(range(798, 814)))
+experiment_ids = list(range(798, 814)) + list(range(726, 732))
+
+runs_df = fetch_experiment(experiment_ids=experiment_ids)
 runs_df = runs_df[['sys/id',
                    'config/training_plan/parameters/norm_pix_loss',
                    'config/training_plan/parameters/include_lesion_mask',
@@ -70,8 +74,6 @@ runs_df['weighted_precision'] = 0.0
 runs_df['weighted_recall'] = 0.0
 runs_df['weighted_f1'] = 0.0
 
-# NEW: loop over runs_df rows, extract latents for each model, train MIL, store best metrics
-# Deterministic seed (same for each model to ensure comparable MIL initialization & sampling)
 SEED = 42
 
 torch.backends.cudnn.deterministic = True
@@ -231,9 +233,15 @@ for idx, row in runs_df.iterrows():
     runs_df.loc[idx, 'weighted_recall'] = best_metrics['weighted_r']
     runs_df.loc[idx, 'weighted_f1'] = best_metrics['weighted_f1']
 
-out_pickle = "runs_df_mil_results.pkl"
-out_csv = "runs_df_mil_results.csv"
+output_dir = os.path.join(os.getcwd(), "mil_results")
+os.makedirs(output_dir, exist_ok=True)
+
+date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+out_pickle = os.path.join(output_dir, f"runs_df_mil_results_{date_str}.pkl")
+out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}.csv")
+
 runs_df.to_pickle(out_pickle)
 runs_df.to_csv(out_csv, index=False)
-print(f"\nSaved runs results to {out_pickle} and {out_csv}")
+
+print(f"\nSaved runs results to {output_dir}: {out_pickle}, {out_csv}")
 # %%
