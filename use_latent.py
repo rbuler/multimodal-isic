@@ -3,8 +3,6 @@ import os
 import yaml
 import torch
 import random
-import typing
-import argparse
 import numpy as np
 import torch.nn as nn
 from collections import Counter
@@ -16,6 +14,8 @@ from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from utils import get_args_parser
 from datetime import datetime
+from sklearn.model_selection import StratifiedKFold
+
 
 class AttentionMIL(nn.Module):
     def __init__(self, input_dim=76, hidden_dim=128, att_dim=64, num_classes=7):
@@ -57,7 +57,9 @@ with open(args.config_path) as file:
 
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
-experiment_ids = list(range(798, 814)) + list(range(726, 732))
+# experiment_ids = list(range(798, 814)) + list(range(726, 732))
+experiment_ids = [726]
+
 
 runs_df = fetch_experiment(experiment_ids=experiment_ids)
 runs_df = runs_df[['sys/id',
@@ -74,7 +76,7 @@ runs_df['weighted_precision'] = 0.0
 runs_df['weighted_recall'] = 0.0
 runs_df['weighted_f1'] = 0.0
 
-SEED = 42
+SEED = config['seed']
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -137,101 +139,153 @@ for idx, row in runs_df.iterrows():
         for pid, g in patch_level_latents_df_test.groupby('patient_id')
     ]
 
-    train_dataset = PatientDataset(train_patient_features, train_patient_labels)
-    val_dataset = PatientDataset(test_patient_features, test_patient_labels)
+    # --- 5-fold cross-validation on patient-level training data ---
 
-    patient_labels = np.array(train_patient_labels)
-    patient_class_counts = Counter(patient_labels)
-    weights = np.array([1.0 / patient_class_counts[int(lbl)] for lbl in patient_labels], dtype=np.float64)
-    sample_weights = torch.from_numpy(weights)
-    sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+    SPLITS = 5
+    skf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=SEED)
+    y = np.array(train_patient_labels)
 
-    train_loader = DataLoader(train_dataset, batch_size=1, sampler=sampler, drop_last=False)
-    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+    fold_test_metrics = []
 
-    torch.manual_seed(SEED)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(SEED)
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model = AttentionMIL(input_dim=train_dataset[0][0].shape[1], hidden_dim=256, att_dim=128).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-    criterion = nn.CrossEntropyLoss()
+    test_dataset = PatientDataset(test_patient_features, test_patient_labels)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     num_epochs = 100
-    best_bacc = -np.inf
-    best_metrics = { 'micro': np.nan, 'macro_p': np.nan, 'macro_r': np.nan, 'macro_f1': np.nan,
-                     'weighted_p': np.nan, 'weighted_r': np.nan, 'weighted_f1': np.nan }
-    for epoch in range(1, num_epochs + 1):
-        model.train()
-        total_loss = 0.0
-        total_val_loss = 0.0
-        for x, y in train_loader:
-            x = x[0].to(device)
-            y_long = y.to(device).long()
+    criterion = nn.CrossEntropyLoss()
 
-            optimizer.zero_grad()
-            probs, att = model(x)
-            logp = torch.log(probs + 1e-9).unsqueeze(0)
-            loss = criterion(logp, y_long)
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
+    for fold_idx, (train_idx, val_idx) in enumerate(skf.split(np.zeros(len(y)), y)):
+        print(f"  Fold {fold_idx+1}/{SPLITS}: train {len(train_idx)} patients, val {len(val_idx)} patients")
+
+        # build fold datasets and samplers
+        fold_train_feats = [train_patient_features[i] for i in train_idx]
+        fold_train_labels = [int(train_patient_labels[i]) for i in train_idx]
+        fold_val_feats = [train_patient_features[i] for i in val_idx]
+        fold_val_labels = [int(train_patient_labels[i]) for i in val_idx]
+
+        # weighted sampler on fold training set
+        patient_labels_fold = np.array(fold_train_labels)
+        class_counts = Counter(patient_labels_fold)
+        weights = np.array([1.0 / class_counts[int(lbl)] for lbl in patient_labels_fold], dtype=np.float64)
+        sample_weights = torch.from_numpy(weights)
+        sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+
+        train_dataset = PatientDataset(fold_train_feats, fold_train_labels)
+        val_dataset = PatientDataset(fold_val_feats, fold_val_labels)
+
+        train_loader = DataLoader(train_dataset, batch_size=1, sampler=sampler, drop_last=False)
+        val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+
+        # seeds per fold for reproducibility
+        torch.manual_seed(SEED + fold_idx)
+        np.random.seed(SEED + fold_idx)
+        random.seed(SEED + fold_idx)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(SEED + fold_idx)
+
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = AttentionMIL(input_dim=train_dataset[0][0].shape[1], hidden_dim=256, att_dim=128).to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
+        best_val_bacc = -np.inf
+        best_state = None
+
+        for epoch in range(1, num_epochs + 1):
+            model.train()
+            for x, y_batch in train_loader:
+                x = x[0].to(device)
+                y_long = y_batch.to(device).long()
+                optimizer.zero_grad()
+                probs, att = model(x)
+                loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), y_long)
+                loss.backward()
+                optimizer.step()
+
+            model.eval()
+            y_true = []
+            y_score = []
+            with torch.no_grad():
+                for x, y_batch in val_loader:
+                    x = x[0].to(device)
+                    y_long = y_batch.to(device).long()
+                    probs, att = model(x)
+                    y_true.append(int(y_long.item()))
+                    y_score.append(probs.cpu().numpy())
+
+            if len(y_true) == 0:
+                print("    No validation samples for this fold, skipping")
+                break
+
+            y_true = np.array(y_true)
+            y_score = np.vstack(y_score)
+            y_pred = np.argmax(y_score, axis=1)
+            try:
+                _ = roc_auc_score(y_true, y_score, multi_class='ovr')
+            except Exception:
+                pass
+            val_bacc = balanced_accuracy_score(y_true, y_pred)
+
+            if val_bacc > best_val_bacc + 1e-6:
+                best_val_bacc = val_bacc
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+
+        if best_state is not None:
+            model.load_state_dict(best_state)
 
         model.eval()
         y_true = []
         y_score = []
-        total_val_loss = 0.0
         with torch.no_grad():
-            for x, y in val_loader:
+            for x, y_batch in test_loader:
                 x = x[0].to(device)
-                y_long = y.to(device).long()
+                y_long = y_batch.to(device).long()
                 probs, att = model(x)
                 y_true.append(int(y_long.item()))
                 y_score.append(probs.cpu().numpy())
-                val_loss = criterion(torch.log(probs.unsqueeze(0) + 1e-9), y_long)
-                total_val_loss += val_loss.item()
 
         if len(y_true) == 0:
-            print("  No validation samples, skipping epoch metrics")
+            print("  No test samples available, recording NaNs for this fold")
+            fold_test_metrics.append({k: np.nan for k in ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']})
             continue
 
         y_true = np.array(y_true)
         y_score = np.vstack(y_score)
-        try:
-            auc = roc_auc_score(y_true, y_score, multi_class='ovr')
-        except Exception:
-            auc = float('nan')
+        y_pred = np.argmax(y_score, axis=1)
 
-        y_pred_labels = np.argmax(y_score, axis=1)
-        acc = accuracy_score(y_true, y_pred_labels)
-        bacc = balanced_accuracy_score(y_true, y_pred_labels)
+        micro_acc = accuracy_score(y_true, y_pred)
+        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
+        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
 
-        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred_labels, average='macro', zero_division=0)
-        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred_labels, average='weighted', zero_division=0)
+        fold_test_metrics.append({'micro': micro_acc,
+                                  'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
+                                  'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1})
 
-        if bacc > best_bacc:
-            best_bacc = bacc
-            best_metrics['micro'] = acc
-            best_metrics['macro_p'] = macro_p
-            best_metrics['macro_r'] = macro_r
-            best_metrics['macro_f1'] = macro_f1
-            best_metrics['weighted_p'] = weighted_p
-            best_metrics['weighted_r'] = weighted_r
-            best_metrics['weighted_f1'] = weighted_f1
+    metrics_keys = ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']
+    agg_mean = {}
+    agg_std = {}
+    for k in metrics_keys:
+        vals = np.array([m[k] for m in fold_test_metrics], dtype=np.float64)
+        if np.all(np.isnan(vals)):
+            agg_mean[k] = np.nan
+            agg_std[k] = np.nan
+        else:
+            agg_mean[k] = float(np.nanmean(vals))
+            agg_std[k] = float(np.nanstd(vals, ddof=0))
 
-        if epoch % 10 == 0 or epoch == 1:
-            avg_loss = total_loss / len(train_loader) if len(train_loader) > 0 else 0.0
-            avg_val_loss = total_val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
-            print(f"  Epoch {epoch}: loss={avg_loss:.4f}, val_loss={avg_val_loss:.4f}, AUC={auc:.3f}, ACC={acc:.3f}, BACC={bacc:.3f}")
+    runs_df.loc[idx, 'micro_accuracy'] = agg_mean['micro']
+    runs_df.loc[idx, 'macro_precision'] = agg_mean['macro_p']
+    runs_df.loc[idx, 'macro_recall'] = agg_mean['macro_r']
+    runs_df.loc[idx, 'macro_f1'] = agg_mean['macro_f1']
+    runs_df.loc[idx, 'weighted_precision'] = agg_mean['weighted_p']
+    runs_df.loc[idx, 'weighted_recall'] = agg_mean['weighted_r']
+    runs_df.loc[idx, 'weighted_f1'] = agg_mean['weighted_f1']
 
-    runs_df.loc[idx, 'micro_accuracy'] = best_metrics['micro']
-    runs_df.loc[idx, 'macro_precision'] = best_metrics['macro_p']
-    runs_df.loc[idx, 'macro_recall'] = best_metrics['macro_r']
-    runs_df.loc[idx, 'macro_f1'] = best_metrics['macro_f1']
-    runs_df.loc[idx, 'weighted_precision'] = best_metrics['weighted_p']
-    runs_df.loc[idx, 'weighted_recall'] = best_metrics['weighted_r']
-    runs_df.loc[idx, 'weighted_f1'] = best_metrics['weighted_f1']
+    runs_df.loc[idx, 'micro_accuracy_std'] = agg_std['micro']
+    runs_df.loc[idx, 'macro_precision_std'] = agg_std['macro_p']
+    runs_df.loc[idx, 'macro_recall_std'] = agg_std['macro_r']
+    runs_df.loc[idx, 'macro_f1_std'] = agg_std['macro_f1']
+    runs_df.loc[idx, 'weighted_precision_std'] = agg_std['weighted_p']
+    runs_df.loc[idx, 'weighted_recall_std'] = agg_std['weighted_r']
+    runs_df.loc[idx, 'weighted_f1_std'] = agg_std['weighted_f1']
 
 output_dir = os.path.join(os.getcwd(), "mil_results")
 os.makedirs(output_dir, exist_ok=True)
