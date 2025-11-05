@@ -57,9 +57,7 @@ with open(args.config_path) as file:
 
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
-# experiment_ids = list(range(798, 814)) + list(range(726, 732))
-experiment_ids = [726]
-
+experiment_ids = list(range(798, 814)) + list(range(726, 732))
 
 runs_df = fetch_experiment(experiment_ids=experiment_ids)
 runs_df = runs_df[['sys/id',
