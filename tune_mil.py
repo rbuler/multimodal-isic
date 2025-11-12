@@ -11,7 +11,7 @@ from utils import get_args_parser
 import yaml
 import pickle
 from utils import get_args_parser
-from temp import train_mil
+from temp import train_mil, train_graph_mil
 import cloudpickle, traceback
 from datetime import datetime
 from save_latent import extract_latents
@@ -26,17 +26,17 @@ def main():
         config_path="config.yml",
         # model_name="a9d7feb3402a4670bbcfa73f534acab7.pth",  # <-- the AE model basename to use
         model_name="e6b29aa3b47145ec935e675a13c4b71d.pth",
-        num_samples=5000,
+        num_samples=2000,
         max_concurrent=4,
         cpus_per_trial=30.0,
         gpus_per_trial=(1.0 if torch.cuda.is_available() else 0.0),
         num_workers=min(8, max(1, (os.cpu_count() or 1) // 2)),
         pin_memory=False,
         torch_threads=min(8, max(1, (os.cpu_count() or 1) // 2)),
-        num_epochs=300,
+        num_epochs=200,
         patience=16,
         seed=42,
-        max_failures=10
+        max_failures=5,        
     )
 
     def _parse_known_args_override(self, *override_args, **override_kwargs):
@@ -113,14 +113,45 @@ def main():
 
     reporter = CLIReporter(metric_columns=["val_bacc", "val_acc", "val_auc", "training_iteration"])
 
-    search_space = {
+    # Define both search spaces and select based on args.tune_type
+    search_space_mil = {
         "hidden_dim": tune.randint(32, 1025),
         "att_dim": tune.randint(32, 1025),
         "dropout": tune.uniform(0.0, 0.75),
-        "optimizer": tune.choice(["adam", "adamw", "sgd"]),
+        "optimizer": tune.choice(["adam", "adamw"]),
         "lr": tune.loguniform(1e-7, 1e-3),
         "weight_decay": tune.uniform(0, 1e-3),
     }
+
+    search_space_graph = {
+        # GNN architecture choices
+        "gnn_type": tune.choice(["gcn", "gat"]),
+        "gnn_hidden": tune.randint(32, 513),
+        "gnn_layers": tune.randint(1, 8),
+        "gnn_dropout": tune.uniform(0.0, 0.75),
+        "connect_diagonals": tune.choice([False, True]),
+
+        # MIL pooling / classifier
+        "att_dim": tune.randint(16, 512),
+        "pool_dropout": tune.uniform(0.0, 0.75),
+        "classifier_dim": tune.randint(16, 512),
+
+        # optimization
+        "optimizer": tune.choice(["adam", "adamw", "sgd"]),
+        "lr": tune.loguniform(1e-6, 1e-3),
+        "weight_decay": tune.loguniform(1e-8, 1e-3),
+    }
+
+
+    # choose search space and train function
+    tune_type = 'mil' # 'mil' or 'graph_mil'
+    
+    if tune_type == 'graph_mil':
+        search_space = search_space_graph
+        train_fn = train_graph_mil
+    else:
+        search_space = search_space_mil
+        train_fn = train_mil
 
     resources = {"cpu": float(args.cpus_per_trial), "gpu": float(args.gpus_per_trial)}
 
@@ -143,10 +174,10 @@ def main():
 
     for k,v in tune_data.items():
         check_pickle(v, f"tune_data['{k}']")
-    check_pickle(train_mil, "train_mil (function)")
+    check_pickle(train_fn, f"{train_fn.__name__} (function)")
 
     analysis = tune.run(
-        tune.with_parameters(train_mil, data=tune_data, seed=args.seed, num_classes=int(config.get('num_classes', 7)),
+        tune.with_parameters(train_fn, data=tune_data, seed=args.seed, num_classes=int(config.get('num_classes', 7)),
                              device_str=('cuda' if torch.cuda.is_available() else 'cpu'),
                              patience=args.patience, max_epochs=args.num_epochs),
         resources_per_trial=resources,
