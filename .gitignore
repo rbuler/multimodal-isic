@@ -8,3 +8,6 @@ best_ae_model_cuda*.pth
 out_*.log
 output_*.png
 config*.yml
+*.pkl
+*.csv
+/tune_mil_outputs/*
