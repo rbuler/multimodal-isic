@@ -5,6 +5,7 @@ import torch
 import random
 import numpy as np
 import torch.nn as nn
+from datetime import datetime
 from collections import Counter
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.metrics import balanced_accuracy_score
@@ -12,42 +13,9 @@ from sklearn.metrics import roc_auc_score, accuracy_score
 from save_latent import extract_latents
 from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
-from utils import get_args_parser
-from datetime import datetime
 from sklearn.model_selection import StratifiedKFold
-
-
-class AttentionMIL(nn.Module):
-    def __init__(self, input_dim=76, hidden_dim=128, att_dim=64, num_classes=7):
-        super().__init__()
-        self.feature_extractor = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5)
-        )
-        self.attention = nn.Sequential(
-            nn.Linear(hidden_dim, att_dim),
-            nn.Tanh(),
-            nn.Linear(att_dim, 1)
-        )
-        self.classifier = nn.Linear(hidden_dim, num_classes)
-
-    def forward(self, x):
-        h = self.feature_extractor(x)                # [N, hidden_dim]
-        a = torch.softmax(self.attention(h), dim=0)  # [N, 1] attention over instances
-        z = torch.sum(a * h, dim=0)                  # [hidden_dim] aggregated bag representation
-        logits = self.classifier(z)                  # [num_classes]
-        probs = torch.softmax(logits, dim=0)        # class probabilities
-        return probs, a
-
-class PatientDataset(Dataset):
-    def __init__(self, patient_features, patient_labels):
-        self.features = patient_features
-        self.labels = patient_labels
-    def __len__(self):
-        return len(self.features)
-    def __getitem__(self, idx):
-        return self.features[idx], torch.tensor(self.labels[idx], dtype=torch.float32)
+from utils import get_args_parser
+from temp import AttentionMIL, PatientDataset
 
 
 parser = get_args_parser('config.yml')
@@ -154,13 +122,11 @@ for idx, row in runs_df.iterrows():
     for fold_idx, (train_idx, val_idx) in enumerate(skf.split(np.zeros(len(y)), y)):
         print(f"  Fold {fold_idx+1}/{SPLITS}: train {len(train_idx)} patients, val {len(val_idx)} patients")
 
-        # build fold datasets and samplers
         fold_train_feats = [train_patient_features[i] for i in train_idx]
         fold_train_labels = [int(train_patient_labels[i]) for i in train_idx]
         fold_val_feats = [train_patient_features[i] for i in val_idx]
         fold_val_labels = [int(train_patient_labels[i]) for i in val_idx]
 
-        # weighted sampler on fold training set
         patient_labels_fold = np.array(fold_train_labels)
         class_counts = Counter(patient_labels_fold)
         weights = np.array([1.0 / class_counts[int(lbl)] for lbl in patient_labels_fold], dtype=np.float64)
@@ -173,7 +139,6 @@ for idx, row in runs_df.iterrows():
         train_loader = DataLoader(train_dataset, batch_size=1, sampler=sampler, drop_last=False)
         val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
-        # seeds per fold for reproducibility
         torch.manual_seed(SEED + fold_idx)
         np.random.seed(SEED + fold_idx)
         random.seed(SEED + fold_idx)
@@ -181,7 +146,7 @@ for idx, row in runs_df.iterrows():
             torch.cuda.manual_seed_all(SEED + fold_idx)
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = AttentionMIL(input_dim=train_dataset[0][0].shape[1], hidden_dim=256, att_dim=128).to(device)
+        model = AttentionMIL(input_dim=train_dataset[0][0].shape[1], hidden_dim=256, att_dim=128, dropout=0.5).to(device)
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
 
         best_val_bacc = -np.inf
