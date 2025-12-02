@@ -15,7 +15,7 @@ from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedKFold
 from utils import get_args_parser
-from temp import AttentionMIL, PatientDataset
+from temp import AttentionMIL, PatientDataset, GraphMIL, build_grid_adj
 
 
 parser = get_args_parser('config.yml')
@@ -26,6 +26,8 @@ with open(args.config_path) as file:
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
 experiment_ids = list(range(798, 814)) + list(range(726, 732))
+experiment_ids = [805]
+
 
 runs_df = fetch_experiment(experiment_ids=experiment_ids)
 runs_df = runs_df[['sys/id',
@@ -146,8 +148,46 @@ for idx, row in runs_df.iterrows():
             torch.cuda.manual_seed_all(SEED + fold_idx)
 
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        model = AttentionMIL(input_dim=train_dataset[0][0].shape[1], hidden_dim=256, att_dim=128, dropout=0.5).to(device)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+
+        ## ------------------------------------------------ tune PARAMS ------------------------------------------------ ##
+        mil_type = 'graph'  # 'classic' or 'graph' 
+
+        input_dim = train_dataset[0][0].shape[1]
+        if mil_type == 'classic':
+            if config['best_params']['use'] is False:
+                model = AttentionMIL(input_dim=input_dim, hidden_dim=256, att_dim=128, dropout=0.5).to(device)
+                optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+            else:
+                best_params = config['best_params']
+                model = AttentionMIL(input_dim=input_dim,
+                                     hidden_dim=best_params['hidden_dim'],
+                                     att_dim=best_params['att_dim'],
+                                     dropout=best_params['dropout']).to(device)
+                if best_params['optimizer'] == 'adam':
+                    optimizer = torch.optim.Adam(model.parameters(),
+                                                 lr=best_params['learning_rate'],
+                                                 weight_decay=best_params['weight_decay'])
+                elif best_params['optimizer'] == 'adamW':
+                    optimizer = torch.optim.AdamW(model.parameters(),
+                                                  lr=best_params['learning_rate'],
+                                                  weight_decay=best_params['weight_decay'])
+                else:
+                    raise ValueError(f"Unknown optimizer: {best_params['optimizer']}")
+        elif mil_type == 'graph':
+            model = GraphMIL(input_dim=input_dim,
+                             gnn_type='gcn',
+                             gnn_hidden=128,
+                             gnn_layers=2,
+                             gnn_dropout=0.75,
+                             att_dim=64,
+                             pool_dropout=0.0,
+                             classifier_dim=64,
+                             num_classes=7).to(device)
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+            
+        else:
+            raise ValueError(f"Unsupported mil_type: {mil_type}; choose 'classic' or 'graph'")
+        ## ------------------------------------------------------------------------------------------------------------- ##
 
         best_val_bacc = -np.inf
         best_state = None
@@ -158,7 +198,16 @@ for idx, row in runs_df.iterrows():
                 x = x[0].to(device)
                 y_long = y_batch.to(device).long()
                 optimizer.zero_grad()
-                probs, att = model(x)
+                if mil_type == 'graph':
+                    # build adjacency for current bag
+                    try:
+                        adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
+                    except Exception:
+                        adj_norm = None
+                        adj_mask = None
+                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                else:
+                    probs, att = model(x)
                 loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), y_long)
                 loss.backward()
                 optimizer.step()
@@ -170,7 +219,15 @@ for idx, row in runs_df.iterrows():
                 for x, y_batch in val_loader:
                     x = x[0].to(device)
                     y_long = y_batch.to(device).long()
-                    probs, att = model(x)
+                    if mil_type == 'graph':
+                        try:
+                            adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
+                        except Exception:
+                            adj_norm = None
+                            adj_mask = None
+                        probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                    else:
+                        probs, att = model(x)
                     y_true.append(int(y_long.item()))
                     y_score.append(probs.cpu().numpy())
 
@@ -201,7 +258,15 @@ for idx, row in runs_df.iterrows():
             for x, y_batch in test_loader:
                 x = x[0].to(device)
                 y_long = y_batch.to(device).long()
-                probs, att = model(x)
+                if mil_type == 'graph':
+                    try:
+                        adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
+                    except Exception:
+                        adj_norm = None
+                        adj_mask = None
+                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                else:
+                    probs, att = model(x)
                 y_true.append(int(y_long.item()))
                 y_score.append(probs.cpu().numpy())
 
