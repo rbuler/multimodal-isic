@@ -49,7 +49,7 @@ def main():
     with open(args.config_path) as file:
         config = yaml.load(file, Loader=yaml.FullLoader)
 
-    load = False
+    load = True
     if load:
         patch_train_df = '/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/dataframes_latents/patch_level_latents_train_df.pkl'
         patch_test_df = '/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/dataframes_latents/patch_level_latents_test_df.pkl'
@@ -123,28 +123,54 @@ def main():
         "weight_decay": tune.uniform(0, 1e-3),
     }
 
+    # search_space_graph = {
+    #     # GNN architecture choices
+    #     "gnn_type": tune.choice(["gcn", "gat"]),
+    #     "gnn_hidden": tune.randint(32, 513),
+    #     "gnn_layers": tune.randint(1, 8),
+    #     "gnn_dropout": tune.uniform(0.0, 0.75),
+    #     "connect_diagonals": tune.choice([False, True]),
+
+    #     # MIL pooling / classifier
+    #     "att_dim": tune.randint(16, 512),
+    #     "pool_dropout": tune.uniform(0.0, 0.75),
+    #     "classifier_dim": tune.randint(16, 512),
+
+    #     # optimization
+    #     "optimizer": tune.choice(["adam", "adamw", "sgd"]),
+    #     "lr": tune.loguniform(1e-6, 1e-3),
+    #     "weight_decay": tune.loguniform(1e-8, 1e-3),
+    # }
+
     search_space_graph = {
-        # GNN architecture choices
-        "gnn_type": tune.choice(["gcn", "gat"]),
-        "gnn_hidden": tune.randint(32, 513),
-        "gnn_layers": tune.randint(1, 8),
-        "gnn_dropout": tune.uniform(0.0, 0.75),
-        "connect_diagonals": tune.choice([False, True]),
+        # GNN architecture choices (updated)
+        "gnn_type": tune.choice(["edgeconv", "gin", "graphsage", "transformer"]),
+        "gnn_hidden": tune.choice([128, 256, 384, 512]),
+        "gnn_layers": tune.choice([2, 3, 4, 5]),
+        "gnn_dropout": tune.choice([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
 
-        # MIL pooling / classifier
-        "att_dim": tune.randint(16, 512),
-        "pool_dropout": tune.uniform(0.0, 0.75),
-        "classifier_dim": tune.randint(16, 512),
+        # Additional graph construction parameter
+        "k_neighbors": tune.choice([4, 8, 12, 16]),
 
-        # optimization
-        "optimizer": tune.choice(["adam", "adamw", "sgd"]),
-        "lr": tune.loguniform(1e-6, 1e-3),
-        "weight_decay": tune.loguniform(1e-8, 1e-3),
+        # MIL pooling / classifier (updated)
+        "att_dim": tune.choice([64, 128, 256]),
+        "att_heads": tune.choice([1, 2, 4, 8]),
+        "pool_dropout": tune.choice([0.1, 0.2, 0.3]),
+        "classifier_dim": tune.choice([128, 256]),
+
+        # Architectural flags
+        "use_residual": tune.choice([True, False]),
+        "use_layer_norm": tune.choice([True, False]),
+
+        # Optimization (updated)
+        "optimizer": tune.choice(["adam", "adamw"]),
+        "lr": tune.choice([1e-5, 1e-4, 5e-4, 1e-3]),
+        "weight_decay": tune.choice([1e-6, 1e-5, 1e-4]),
     }
 
 
     # choose search space and train function
-    tune_type = 'mil' # 'mil' or 'graph_mil'
+    tune_type = 'graph_mil' # 'mil' or 'graph_mil'
     
     if tune_type == 'graph_mil':
         search_space = search_space_graph
@@ -187,6 +213,8 @@ def main():
         progress_reporter=reporter,
         max_concurrent_trials=args.max_concurrent,
         fail_fast=False,
+        storage_path="/tmp/my_ray_results",
+        name="tune_mil_experiment",
     )
 
     ts = datetime.now().strftime("%y%m%d%H%M%S")
