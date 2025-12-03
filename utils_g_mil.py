@@ -52,36 +52,6 @@ def set_seed(seed: int = 42):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def build_datasets_from_latents(patch_train_df, patch_test_df, drop_background=False):
-    patch_train_df = patch_train_df.copy()
-    patch_test_df = patch_test_df.copy()
-    patch_train_df['patient_id'] = patch_train_df['image_path'].apply(lambda x: os.path.basename(x).split('_')[1].split('.')[0])
-    patch_test_df['patient_id'] = patch_test_df['image_path'].apply(lambda x: os.path.basename(x).split('_')[1].split('.')[0])
-    if drop_background:
-        patch_train_df = patch_train_df[patch_train_df['patch_in_mask'] == 1].reset_index(drop=True)
-        patch_test_df = patch_test_df[patch_test_df['patch_in_mask'] == 1].reset_index(drop=True)
-
-    train_patient_features = [
-        torch.tensor(np.vstack(g['patch_latent'].values), dtype=torch.float32)
-        for pid, g in patch_train_df.groupby('patient_id')
-    ]
-    train_patient_labels = [
-        int(g['target'].mode().iat[0])
-        for pid, g in patch_train_df.groupby('patient_id')
-    ]
-
-    test_patient_features = [
-        torch.tensor(np.vstack(g['patch_latent'].values), dtype=torch.float32)
-        for pid, g in patch_test_df.groupby('patient_id')
-    ]
-    test_patient_labels = [
-        int(g['target'].mode().iat[0])
-        for pid, g in patch_test_df.groupby('patient_id')
-    ]
-
-    return (train_patient_features, train_patient_labels,
-            test_patient_features, test_patient_labels)
-
 def get_data_loaders(train_feats, train_labels, test_feats, test_labels, num_workers=0, pin_memory=False):
     train_dataset = PatientDataset(train_feats, train_labels)
     val_dataset = PatientDataset(test_feats, test_labels)
@@ -103,15 +73,26 @@ def train_mil(config, data=None, seed=42, num_classes=7, device_str=None, patien
     torch.set_num_interop_threads(max(1, torch_threads//2))
     device = torch.device(device_str if device_str is not None else ('cuda' if torch.cuda.is_available() else 'cpu'))
 
-    if 'train_feats' in data and 'train_labels' in data:
-        train_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data['train_feats']]
-        train_labels = [int(l) for l in data['train_labels']]
-        test_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data.get('test_feats', [])]
-        test_labels = [int(l) for l in data.get('test_labels', [])]
-    else:
-        patch_train_df = data['patch_train_df']
-        patch_test_df = data['patch_test_df']
-        train_feats, train_labels, test_feats, test_labels = build_datasets_from_latents(patch_train_df, patch_test_df)
+    # If we're on CUDA and a per-process GPU memory fraction is provided,
+    # apply it so multiple trials can safely share a single physical GPU.
+    if device.type == 'cuda':
+        frac_str = os.environ.get('PER_PROC_GPU_MEM_FRACTION')
+        if frac_str is not None:
+            try:
+                frac = float(frac_str)
+                frac = max(0.01, min(1.0, frac))
+                try:
+                    torch.cuda.set_per_process_memory_fraction(frac, device=device)
+                except Exception:
+                    # Older PyTorch versions may not have set_per_process_memory_fraction
+                    print(f"Warning: could not set per-process GPU mem fraction (PyTorch may be too old)")
+            except Exception:
+                print(f"Warning: invalid PER_PROC_GPU_MEM_FRACTION='{frac_str}'")
+
+    train_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data['train_feats']]
+    train_labels = [int(l) for l in data['train_labels']]
+    test_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data.get('test_feats', [])]
+    test_labels = [int(l) for l in data.get('test_labels', [])]
 
     train_loader, val_loader = get_data_loaders(train_feats, train_labels, test_feats, test_labels,
                                                 num_workers=int(data.get('num_workers', 0)),
@@ -194,11 +175,9 @@ def train_mil(config, data=None, seed=42, num_classes=7, device_str=None, patien
 
 ######################### Graph-MIL components for GNN tuning #########################
 class GINLayer(nn.Module):
-    """Graph Isomorphism Network layer - powerful and efficient."""
     def __init__(self, in_dim, out_dim, eps=0.0):
         super().__init__()
-        if pyg_nn is None:
-            raise ImportError("torch_geometric required for GINLayer")
+
         self.nn = nn.Sequential(
             nn.Linear(in_dim, out_dim),
             nn.BatchNorm1d(out_dim),
@@ -212,11 +191,9 @@ class GINLayer(nn.Module):
 
 
 class GraphSAGELayer(nn.Module):
-    """GraphSAGE layer with neighborhood sampling - efficient for larger graphs."""
     def __init__(self, in_dim, out_dim, aggr='mean', normalize=True):
         super().__init__()
-        if pyg_nn is None:
-            raise ImportError("torch_geometric required for GraphSAGELayer")
+
         self.conv = pyg_nn.SAGEConv(in_dim, out_dim, aggr=aggr, normalize=normalize)
     
     def forward(self, x, edge_index, edge_weight=None):
@@ -224,11 +201,9 @@ class GraphSAGELayer(nn.Module):
 
 
 class TransformerConvLayer(nn.Module):
-    """Transformer-based graph convolution - attention mechanism for graphs."""
     def __init__(self, in_dim, out_dim, heads=4, concat=True, dropout=0.0):
         super().__init__()
-        if pyg_nn is None:
-            raise ImportError("torch_geometric required for TransformerConvLayer")
+
         self.conv = pyg_nn.TransformerConv(
             in_dim, out_dim, heads=heads, concat=concat, 
             dropout=dropout, edge_dim=None, beta=True
@@ -243,23 +218,20 @@ class GraphMIL(nn.Module):
     """
     Enhanced Graph-based Multiple Instance Learning model.
     
-    Recommended configurations for 196 patches × 768 features:
-    - gnn_type: 'edgeconv' (best for dynamic graphs), 'gin' (most expressive), 
+    Recommended configurations for 196 patches  x 768 features:
+    - gnn_type: 'gat', 'gcn', 'gin' (most expressive), 
                 'graphsage' (most efficient), 'transformer' (attention-based)
     - gnn_hidden: 256-512 (balance between capacity and efficiency)
     - gnn_layers: 2-3 (deeper can oversmooth)
     - use_residual: True (helps training deeper networks)
     - use_layer_norm: True (stabilizes training)
     """
-    def __init__(self, input_dim=768, gnn_type='edgeconv', gnn_hidden=256, 
+    def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, k_neighbors=8,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
                  classifier_dim=128, num_classes=7,
                  use_residual=True, use_layer_norm=True):
         super().__init__()
-        
-        if pyg_nn is None:
-            raise ImportError("torch_geometric is required for GraphMIL")
         
         self.gnn_type = gnn_type.lower()
         self.use_residual = use_residual
@@ -319,6 +291,7 @@ class GraphMIL(nn.Module):
             ) for _ in range(att_heads)
         ])
         
+
         # Classifier with residual connection
         self.classifier = nn.Sequential(
             nn.Linear(self.final_gnn_dim, classifier_dim),
@@ -458,6 +431,20 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
     torch.set_num_threads(torch_threads)
     torch.set_num_interop_threads(max(1, torch_threads//2))
     device = torch.device(device_str if device_str is not None else ('cuda' if torch.cuda.is_available() else 'cpu'))
+
+    # Apply per-process GPU memory fraction if requested (see tune wrapper)
+    if device.type == 'cuda':
+        frac_str = os.environ.get('PER_PROC_GPU_MEM_FRACTION')
+        if frac_str is not None:
+            try:
+                frac = float(frac_str)
+                frac = max(0.01, min(1.0, frac))
+                try:
+                    torch.cuda.set_per_process_memory_fraction(frac, device=device)
+                except Exception:
+                    print(f"Warning: could not set per-process GPU mem fraction (PyTorch may be too old)")
+            except Exception:
+                print(f"Warning: invalid PER_PROC_GPU_MEM_FRACTION='{frac_str}'")
 
     train_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data['train_feats']]
     train_labels = [int(l) for l in data['train_labels']]
