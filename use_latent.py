@@ -15,7 +15,7 @@ from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedKFold
 from utils import get_args_parser
-from temp import AttentionMIL, PatientDataset, GraphMIL, build_grid_adj
+from utils_g_mil import AttentionMIL, PatientDataset, GraphMIL, build_grid_adj
 
 
 parser = get_args_parser('config.yml')
