@@ -15,14 +15,13 @@ LAYERS_TO_TEST = [
 results = {}
 
 try:
-    import temp
+    import utils_g_mil
 except Exception as e:
-    print('Failed to import temp.py:', e)
+    print('Failed to import utils_g_mil.py:', e)
     traceback.print_exc()
     raise SystemExit(1)
 
-print('temp.py imported, testing layers...')
-
+print('utils_g_mil.py imported, testing layers...')
 # small synthetic graph: N nodes, F features
 N = 16
 F = 8
@@ -43,7 +42,7 @@ batch = torch.zeros(N, dtype=torch.long)
 
 for name in LAYERS_TO_TEST:
     try:
-        cls = getattr(temp, name)
+        cls = getattr(utils_g_mil, name)
     except AttributeError:
         results[name] = ('missing', 'Not defined in temp.py')
         continue
