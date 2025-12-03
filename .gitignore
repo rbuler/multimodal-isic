@@ -1,6 +1,7 @@
 __pycache__/
 .neptune
 .venv
+.venv-pyg
 .vscode
 /ConvMAE/
 best_ae_model_cuda*.pth
