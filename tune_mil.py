@@ -144,19 +144,19 @@ def main():
 
     search_space_graph = {
         # GNN architecture choices (updated)
-        "gnn_type": tune.choice(["edgeconv", "gin", "graphsage", "transformer"]),
-        "gnn_hidden": tune.choice([128, 256, 384, 512]),
-        "gnn_layers": tune.choice([2, 3, 4, 5]),
+        "gnn_type": tune.choice(["gcn", "gat", "gin", "graphsage", "transformer"]),
+        "gnn_hidden": tune.choice([64, 128, 256, 384, 512]),
+        "gnn_layers": tune.choice([2, 3, 4, 5, 6, 7]),
         "gnn_dropout": tune.choice([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
 
         # Additional graph construction parameter
-        "k_neighbors": tune.choice([4, 8, 12, 16]),
+        # "k_neighbors": tune.choice([4, 8, 12, 16]),
 
         # MIL pooling / classifier (updated)
-        "att_dim": tune.choice([64, 128, 256]),
-        "att_heads": tune.choice([1, 2, 4, 8]),
-        "pool_dropout": tune.choice([0.1, 0.2, 0.3]),
-        "classifier_dim": tune.choice([128, 256]),
+        "att_dim": tune.choice([64, 128, 256, 512]),
+        "att_heads": tune.choice([1]),
+        "pool_dropout": tune.choice([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
+        "classifier_dim": tune.choice([64, 128, 256, 384, 512]),
 
         # Architectural flags
         "use_residual": tune.choice([True, False]),
@@ -164,8 +164,8 @@ def main():
 
         # Optimization (updated)
         "optimizer": tune.choice(["adam", "adamw"]),
-        "lr": tune.choice([1e-5, 1e-4, 5e-4, 1e-3]),
-        "weight_decay": tune.choice([1e-6, 1e-5, 1e-4]),
+        "lr": tune.loguniform(1e-6, 1e-3),
+        "weight_decay": tune.loguniform(1e-8, 1e-3),
     }
 
 
@@ -213,8 +213,6 @@ def main():
         progress_reporter=reporter,
         max_concurrent_trials=args.max_concurrent,
         fail_fast=False,
-        storage_path="/tmp/my_ray_results",
-        name="tune_mil_experiment",
     )
 
     ts = datetime.now().strftime("%y%m%d%H%M%S")
