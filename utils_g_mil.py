@@ -228,6 +228,7 @@ class GraphMIL(nn.Module):
     """
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, k_neighbors=8,
+                 gnn_heads=4, gnn_concat=True,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
                  classifier_dim=128, classifier_light=False, num_classes=7,
                  use_residual=True, use_layer_norm=True):
@@ -238,6 +239,8 @@ class GraphMIL(nn.Module):
         self.use_layer_norm = use_layer_norm
         self.k_neighbors = k_neighbors
         self.classifier_light = classifier_light
+        self.gnn_heads = gnn_heads
+        self.gnn_concat = gnn_concat
         
         # Input projection if using residual connections
         if use_residual and input_dim != gnn_hidden:
@@ -259,12 +262,16 @@ class GraphMIL(nn.Module):
             elif self.gnn_type == 'graphsage':
                 layer = GraphSAGELayer(in_dim, out_dim, aggr='mean', normalize=True)
             elif self.gnn_type == 'transformer':
-                layer = TransformerConvLayer(in_dim, out_dim, heads=4, 
-                                            concat=True, dropout=gnn_dropout)
+                layer = TransformerConvLayer(in_dim, out_dim, heads=self.gnn_heads,
+                                            concat=self.gnn_concat, dropout=gnn_dropout)
+                # TransformerConvLayer exposes actual output dim
                 out_dim = layer.out_dim  # Adjust for multi-head concat
             elif self.gnn_type == 'gat':
-                layer = pyg_nn.GATConv(in_dim, out_dim, heads=4, concat=True, dropout=gnn_dropout)
-                out_dim = out_dim * 4
+                # TODO add tuning for heads, residual connections, etc.
+                layer = pyg_nn.GATConv(in_dim, out_dim, heads=self.gnn_heads,
+                                        concat=self.gnn_concat, dropout=gnn_dropout)
+                if self.gnn_concat:
+                    out_dim = out_dim * self.gnn_heads
             elif self.gnn_type == 'gcn':
                 layer = pyg_nn.GCNConv(in_dim, out_dim)
             else:
@@ -536,11 +543,14 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
 
     input_dim = train_feats[0].shape[1] if len(train_feats) > 0 else data.get('input_dim', 76)
 
+    # Read gnn heads/concat directly from config (consistent with other params)
     model = GraphMIL(input_dim=input_dim,
                      gnn_type=config.get('gnn_type', 'gcn'),
                      gnn_hidden=int(config.get('gnn_hidden', 128)),
                      gnn_layers=int(config.get('gnn_layers', 2)),
                      gnn_dropout=float(config.get('gnn_dropout', 0.0)),
+                     gnn_heads=int(config.get('gnn_heads', 4)),
+                     gnn_concat=bool(config.get('gnn_concat', True)),
                      att_dim=int(config.get('att_dim', 64)),
                      pool_dropout=float(config.get('pool_dropout', 0.0)),
                      classifier_dim=int(config.get('classifier_dim', 64)),
