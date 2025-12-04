@@ -180,7 +180,7 @@ class GINLayer(nn.Module):
 
         self.nn = nn.Sequential(
             nn.Linear(in_dim, out_dim),
-            nn.BatchNorm1d(out_dim),
+            nn.LayerNorm(out_dim),
             nn.ReLU(),
             nn.Linear(out_dim, out_dim)
         )
@@ -229,7 +229,7 @@ class GraphMIL(nn.Module):
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, k_neighbors=8,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
-                 classifier_dim=128, num_classes=7,
+                 classifier_dim=128, classifier_light=False, num_classes=7,
                  use_residual=True, use_layer_norm=True):
         super().__init__()
         
@@ -237,6 +237,7 @@ class GraphMIL(nn.Module):
         self.use_residual = use_residual
         self.use_layer_norm = use_layer_norm
         self.k_neighbors = k_neighbors
+        self.classifier_light = classifier_light
         
         # Input projection if using residual connections
         if use_residual and input_dim != gnn_hidden:
@@ -262,11 +263,9 @@ class GraphMIL(nn.Module):
                                             concat=True, dropout=gnn_dropout)
                 out_dim = layer.out_dim  # Adjust for multi-head concat
             elif self.gnn_type == 'gat':
-                # Fallback to multi-head GAT
                 layer = pyg_nn.GATConv(in_dim, out_dim, heads=4, concat=True, dropout=gnn_dropout)
                 out_dim = out_dim * 4
             elif self.gnn_type == 'gcn':
-                # Fallback to GCN
                 layer = pyg_nn.GCNConv(in_dim, out_dim)
             else:
                 raise ValueError(f"Unsupported gnn_type: {self.gnn_type}")
@@ -292,33 +291,32 @@ class GraphMIL(nn.Module):
         ])
         
 
+        # TODO simpler classifier like in traditional MIL?
+        # TODO should dropout be applied for gin and graphsage too?
         # Classifier with residual connection
-        self.classifier = nn.Sequential(
-            nn.Linear(self.final_gnn_dim, classifier_dim),
-            nn.LayerNorm(classifier_dim),
-            nn.ReLU(),
-            nn.Dropout(pool_dropout),
-            nn.Linear(classifier_dim, classifier_dim // 2),
-            nn.LayerNorm(classifier_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(pool_dropout / 2),
-            nn.Linear(classifier_dim // 2, num_classes)
+        if classifier_light:
+            self.classifier = nn.Sequential(
+                nn.Linear(self.final_gnn_dim, classifier_dim),
+                nn.ReLU(),
+                nn.Dropout(pool_dropout),
+                nn.Linear(classifier_dim, num_classes)
+            )
+        else:
+            self.classifier = nn.Sequential(
+                nn.Linear(self.final_gnn_dim, classifier_dim),
+                nn.LayerNorm(classifier_dim),
+                nn.ReLU(),
+                nn.Dropout(pool_dropout),
+                nn.Linear(classifier_dim, classifier_dim // 2),
+                nn.LayerNorm(classifier_dim // 2),
+                nn.ReLU(),
+                nn.Dropout(pool_dropout / 2),
+                nn.Linear(classifier_dim // 2, num_classes)
         )
     
-    def build_edge_index(self, x, adj=None, k=None):
-        """Build edge index for the graph."""
-        if k is None:
-            k = self.k_neighbors
-        
-        if adj is not None:
-            # Use provided adjacency matrix
-            mask = (adj > 0)
-            edge_index = mask.nonzero(as_tuple=False).t()
-            return edge_index
-        
-        # Build k-NN graph based on feature similarity
-        edge_index = pyg_nn.knn_graph(x, k=k, batch=None, loop=False)
-        return edge_index
+    # Note: edge/index construction moved out of the model. See module helpers
+    # `build_knn_edge_index` and `build_graph` below. The model expects either
+    # a dense `adj` (normalized) or an `edge_index` to be provided by the caller.
     
     def forward(self, x, adj=None, adj_mask=None, edge_index=None, edge_weight=None):
         """
@@ -338,20 +336,42 @@ class GraphMIL(nn.Module):
             x_input = x
         
         h = x_input
-        
-        # Build edge index if not provided
-        if edge_index is None and self.gnn_type != 'edgeconv':
-            edge_index = self.build_edge_index(x, adj=adj)
-        
+
+        # If caller provided a dense adjacency, convert to integer edge_index
+        if edge_index is None and adj is not None:
+            try:
+                mask = (adj > 0)
+                edge_index = mask.nonzero(as_tuple=False).t().to(x.device).long()
+                try:
+                    edge_weight = adj.to(x.device)[mask]
+                except Exception:
+                    edge_weight = edge_weight
+            except Exception:
+                edge_index = None
+
+        # Validation / coercion: ensure edge_index is a long tensor of shape [2, E]
+        if edge_index is not None:
+            if not torch.is_tensor(edge_index):
+                edge_index = torch.tensor(edge_index, device=x.device)
+            edge_index = edge_index.to(x.device).long()
+            # If user accidentally passed shape [E,2], transpose to [2,E]
+            if edge_index.dim() == 2 and edge_index.shape[0] == 2:
+                edge_index = edge_index.contiguous()
+            elif edge_index.dim() == 2 and edge_index.shape[1] == 2:
+                edge_index = edge_index.t().contiguous()
+            else:
+                raise ValueError(f"edge_index must be shape [2, E]; got {tuple(edge_index.shape)}")
+
+        if edge_weight is not None:
+            if not torch.is_tensor(edge_weight):
+                edge_weight = torch.tensor(edge_weight, device=x.device)
+            edge_weight = edge_weight.to(x.device).flatten()
+
         # GNN layers with residual connections
         for i, layer in enumerate(self.gnn_layers):
             h_prev = h
-            
-            if self.gnn_type == 'edgeconv':
-                # EdgeConv builds its own k-NN graph
-                h = layer(h)
-            else:
-                h = layer(h, edge_index, edge_weight)
+
+            h = layer(h, edge_index, edge_weight)
             
             # Layer normalization
             if self.use_layer_norm:
@@ -414,6 +434,65 @@ def build_grid_adj(num_nodes, connect_diagonals=False, device=None):
     return adj_norm, (adj > 0).float()
 
 
+# cache for grid adjacency to avoid rebuilding identical adj matrices repeatedly
+_GRID_ADJ_CACHE = {}
+
+
+def build_knn_edge_index(x, k=8, device=None):
+    """Build a k-NN edge_index for PyG from node features `x`.
+
+    Returns a tensor of shape [2, E] suitable for passing to a PyG conv.
+    """
+    try:
+        # pyg_nn.knn_graph returns edge_index on the same device as x
+        edge_index = pyg_nn.knn_graph(x, k=k, batch=None, loop=False)
+        return edge_index.long().to(x.device)
+    except Exception:
+        # Fallback: fully-connected edge_index
+        num_nodes = x.size(0)
+        idx = torch.arange(num_nodes, device=device, dtype=torch.long)
+        ii, jj = torch.meshgrid(idx, idx, indexing='ij')
+        edge_index = torch.vstack([ii.reshape(-1), jj.reshape(-1)]).long().to(device)
+        return edge_index
+
+
+def build_graph(x, graph_type='grid', k=None, connect_diagonals=False, device=None):
+    """Return (adj_norm, adj_mask, edge_index, edge_weight) for given node features `x`.
+
+    - For `graph_type='grid'`: returns a normalized dense adjacency (`adj_norm`),
+      binary `adj_mask`, and also `edge_index`/`edge_weight` derived from the mask.
+    - For `graph_type='knn'`: returns `edge_index` built with `k` and `edge_weight=None`.
+    - For unknown `graph_type`, returns a fully-connected normalized adjacency and
+      corresponding edge_index/edge_weight.
+    """
+    num_nodes = x.size(0)
+    if graph_type == 'grid':
+        key = (num_nodes, bool(connect_diagonals), str(device))
+        if key in _GRID_ADJ_CACHE:
+            adj_norm, adj_mask = _GRID_ADJ_CACHE[key]
+        else:
+            adj_norm, adj_mask = build_grid_adj(num_nodes, connect_diagonals=connect_diagonals, device=device)
+            _GRID_ADJ_CACHE[key] = (adj_norm, adj_mask)
+
+        # derive edge_index and edge_weight from adj_mask/adj_norm
+        mask = adj_mask.to(x.device).bool()
+        edge_index = mask.nonzero(as_tuple=False).t().to(x.device).long()
+        # gather edge weights in the same ordering as edge_index (if possible)
+        try:
+            edge_weight = adj_norm.to(x.device)[mask]
+        except Exception:
+            edge_weight = None
+        return adj_norm, adj_mask, edge_index, edge_weight
+
+    elif graph_type == 'knn':
+        k_val = 8 if k is None else int(k)
+        edge_index = build_knn_edge_index(x, k=k_val, device=device)
+        return None, None, edge_index, None
+
+    else:
+        raise ValueError(f"Unsupported graph_type='{graph_type}'. Supported types: 'grid', 'knn'.")
+
+
 def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, patience=8, max_epochs=50):
     """
     Train wrapper for graph-based MIL models. Accepts the same style `data` dict as `train_mil`.
@@ -465,6 +544,7 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
                      att_dim=int(config.get('att_dim', 64)),
                      pool_dropout=float(config.get('pool_dropout', 0.0)),
                      classifier_dim=int(config.get('classifier_dim', 64)),
+                     classifier_light=bool(config.get('classifier_light', False)),
                      num_classes=num_classes).to(device)
 
     opt_name = config.get('optimizer', 'adam')
@@ -487,14 +567,19 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
             x = x[0].to(device)  # x: [N_nodes, feat]
             y_long = y.to(device).long()
             num_nodes = x.shape[0]
-            try:
-                adj_norm, adj_mask = build_grid_adj(num_nodes, connect_diagonals=bool(config.get('connect_diagonals', False)), device=device)
-            except Exception:
-                adj_norm = torch.ones((num_nodes, num_nodes), device=device) / float(num_nodes)
-                adj_mask = torch.ones((num_nodes, num_nodes), device=device)
+
+            # Build graph according to configuration. `build_graph` returns a tuple
+            # (adj_norm, adj_mask, edge_index). For grid graphs we pass adj_norm,
+            # for knn graphs we pass edge_index.
+            graph_type = config.get('graph_type', 'grid')
+            connect_diagonals = bool(config.get('connect_diagonals', False))
+            k_neighbors = config.get('k_neighbors', None)
+            adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                x, graph_type=graph_type, k=k_neighbors,
+                connect_diagonals=connect_diagonals, device=device)
 
             optimizer.zero_grad()
-            probs, _ = model(x, adj=adj_norm, adj_mask=adj_mask)
+            probs, _ = model(x, adj=adj_norm, adj_mask=adj_mask, edge_index=edge_index, edge_weight=edge_weight)
             loss = criterion(torch.log(probs.unsqueeze(0) + 1e-9), y_long)
             loss.backward()
             optimizer.step()
@@ -507,12 +592,13 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
                 x = x[0].to(device)
                 y_long = y.to(device).long()
                 num_nodes = x.shape[0]
-                try:
-                    adj_norm, adj_mask = build_grid_adj(num_nodes, connect_diagonals=bool(config.get('connect_diagonals', False)), device=device)
-                except Exception:
-                    adj_norm = torch.ones((num_nodes, num_nodes), device=device) / float(num_nodes)
-                    adj_mask = torch.ones((num_nodes, num_nodes), device=device)
-                probs, _ = model(x, adj=adj_norm, adj_mask=adj_mask)
+                graph_type = config.get('graph_type', 'grid')
+                connect_diagonals = bool(config.get('connect_diagonals', False))
+                k_neighbors = config.get('k_neighbors', None)
+                adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                    x, graph_type=graph_type, k=k_neighbors,
+                    connect_diagonals=connect_diagonals, device=device)
+                probs, _ = model(x, adj=adj_norm, adj_mask=adj_mask, edge_index=edge_index, edge_weight=edge_weight)
                 y_true.append(int(y_long.item()))
                 y_score.append(probs.cpu().numpy())
 
