@@ -15,7 +15,7 @@ from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedKFold
 from utils import get_args_parser
-from utils_g_mil import AttentionMIL, PatientDataset, GraphMIL, build_grid_adj
+from utils_g_mil import AttentionMIL, PatientDataset, GraphMIL, build_graph
 
 
 parser = get_args_parser('config.yml')
@@ -150,7 +150,10 @@ for idx, row in runs_df.iterrows():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         ## ------------------------------------------------ tune PARAMS ------------------------------------------------ ##
-        mil_type = 'graph'  # 'classic' or 'graph' 
+        mil_type = 'graph'  # 'classic' or 'graph'
+        graph_type = 'grid'  # 'grid' or 'knn'
+        k_neighbors = 8  # only used if graph_type='knn'
+        connect_diagonals = False  # only used if graph_type='grid'
 
         input_dim = train_dataset[0][0].shape[1]
         if mil_type == 'classic':
@@ -199,13 +202,12 @@ for idx, row in runs_df.iterrows():
                 y_long = y_batch.to(device).long()
                 optimizer.zero_grad()
                 if mil_type == 'graph':
-                    # build adjacency for current bag
-                    try:
-                        adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
-                    except Exception:
-                        adj_norm = None
-                        adj_mask = None
-                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                    # build graph for current bag according to graph_type
+                    adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                        x, graph_type=graph_type, k=k_neighbors,
+                        connect_diagonals=connect_diagonals, device=device)
+                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask, 
+                                     edge_index=edge_index, edge_weight=edge_weight)
                 else:
                     probs, att = model(x)
                 loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), y_long)
@@ -220,12 +222,11 @@ for idx, row in runs_df.iterrows():
                     x = x[0].to(device)
                     y_long = y_batch.to(device).long()
                     if mil_type == 'graph':
-                        try:
-                            adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
-                        except Exception:
-                            adj_norm = None
-                            adj_mask = None
-                        probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                        adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                            x, graph_type=graph_type, k=k_neighbors,
+                            connect_diagonals=connect_diagonals, device=device)
+                        probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
+                                         edge_index=edge_index, edge_weight=edge_weight)
                     else:
                         probs, att = model(x)
                     y_true.append(int(y_long.item()))
@@ -259,12 +260,11 @@ for idx, row in runs_df.iterrows():
                 x = x[0].to(device)
                 y_long = y_batch.to(device).long()
                 if mil_type == 'graph':
-                    try:
-                        adj_norm, adj_mask = build_grid_adj(x.shape[0], connect_diagonals=False, device=device)
-                    except Exception:
-                        adj_norm = None
-                        adj_mask = None
-                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask)
+                    adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                        x, graph_type=graph_type, k=k_neighbors,
+                        connect_diagonals=connect_diagonals, device=device)
+                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
+                                     edge_index=edge_index, edge_weight=edge_weight)
                 else:
                     probs, att = model(x)
                 y_true.append(int(y_long.item()))
