@@ -175,7 +175,7 @@ def extract_latents(config, path, remove_background=False):
         patch_level_test_df['patch_latent_pca'] = []
 
     # SAVE DATAFRAMES ------------------------------------------------------
-    save_files = True
+    save_files = False
     folder = 'dataframes_latents' 
     if not os.path.exists(folder):
         os.makedirs(folder)
