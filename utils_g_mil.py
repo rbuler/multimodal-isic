@@ -321,9 +321,6 @@ class GraphMIL(nn.Module):
                 nn.Linear(classifier_dim // 2, num_classes)
         )
     
-    # Note: edge/index construction moved out of the model. See module helpers
-    # `build_knn_edge_index` and `build_graph` below. The model expects either
-    # a dense `adj` (normalized) or an `edge_index` to be provided by the caller.
     
     def forward(self, x, adj=None, adj_mask=None, edge_index=None, edge_weight=None):
         """
@@ -343,36 +340,6 @@ class GraphMIL(nn.Module):
             x_input = x
         
         h = x_input
-
-        # If caller provided a dense adjacency, convert to integer edge_index
-        if edge_index is None and adj is not None:
-            try:
-                mask = (adj > 0)
-                edge_index = mask.nonzero(as_tuple=False).t().to(x.device).long()
-                try:
-                    edge_weight = adj.to(x.device)[mask]
-                except Exception:
-                    edge_weight = edge_weight
-            except Exception:
-                edge_index = None
-
-        # Validation / coercion: ensure edge_index is a long tensor of shape [2, E]
-        if edge_index is not None:
-            if not torch.is_tensor(edge_index):
-                edge_index = torch.tensor(edge_index, device=x.device)
-            edge_index = edge_index.to(x.device).long()
-            # If user accidentally passed shape [E,2], transpose to [2,E]
-            if edge_index.dim() == 2 and edge_index.shape[0] == 2:
-                edge_index = edge_index.contiguous()
-            elif edge_index.dim() == 2 and edge_index.shape[1] == 2:
-                edge_index = edge_index.t().contiguous()
-            else:
-                raise ValueError(f"edge_index must be shape [2, E]; got {tuple(edge_index.shape)}")
-
-        if edge_weight is not None:
-            if not torch.is_tensor(edge_weight):
-                edge_weight = torch.tensor(edge_weight, device=x.device)
-            edge_weight = edge_weight.to(x.device).flatten()
 
         # GNN layers with residual connections
         for i, layer in enumerate(self.gnn_layers):
@@ -449,18 +416,22 @@ def build_knn_edge_index(x, k=8, device=None):
     """Build a k-NN edge_index for PyG from node features `x`.
 
     Returns a tensor of shape [2, E] suitable for passing to a PyG conv.
+    Uses only PyTorch operations (no torch_cluster required).
     """
-    try:
-        # pyg_nn.knn_graph returns edge_index on the same device as x
-        edge_index = pyg_nn.knn_graph(x, k=k, batch=None, loop=False)
-        return edge_index.long().to(x.device)
-    except Exception:
-        # Fallback: fully-connected edge_index
-        num_nodes = x.size(0)
-        idx = torch.arange(num_nodes, device=device, dtype=torch.long)
-        ii, jj = torch.meshgrid(idx, idx, indexing='ij')
-        edge_index = torch.vstack([ii.reshape(-1), jj.reshape(-1)]).long().to(device)
-        return edge_index
+    num_nodes = x.size(0)
+    
+    x_norm = (x ** 2).sum(dim=1, keepdim=True)  # [N, 1]
+    dist_matrix = x_norm + x_norm.t() - 2 * torch.mm(x, x.t())  # [N, N]
+    dist_matrix = torch.clamp(dist_matrix, min=0.0)  # Fix numerical errors
+    
+    dist_matrix.fill_diagonal_(float('inf'))
+    
+    _, knn_indices = torch.topk(dist_matrix, k=min(k, num_nodes-1), dim=1, largest=False)  # [N, k]
+    
+    source_nodes = torch.arange(num_nodes, device=x.device).unsqueeze(1).expand(-1, k)  # [N, k]
+    edge_index = torch.stack([source_nodes.reshape(-1), knn_indices.reshape(-1)], dim=0)  # [2, N*k]
+    
+    return edge_index.long().to(x.device if device is None else device)
 
 
 def build_graph(x, graph_type='grid', k=None, connect_diagonals=False, device=None):
