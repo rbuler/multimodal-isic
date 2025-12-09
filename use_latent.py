@@ -25,7 +25,7 @@ with open(args.config_path) as file:
 
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
-experiment_ids = list(range(798, 814)) + list(range(726, 732))
+# experiment_ids = list(range(798, 814)) + list(range(726, 732))
 experiment_ids = [805]
 
 
@@ -45,6 +45,18 @@ runs_df['weighted_recall'] = 0.0
 runs_df['weighted_f1'] = 0.0
 
 SEED = config['seed']
+
+# Prepare output paths once and persist after each run to avoid losing partial results
+output_dir = os.path.join(os.getcwd(), "mil_results")
+os.makedirs(output_dir, exist_ok=True)
+date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+device_name = f"cuda{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
+out_pickle = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{device_name}.pkl")
+out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{device_name}.csv")
+
+def _persist_results(df):
+    df.to_pickle(out_pickle)
+    df.to_csv(out_csv, index=False)
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -74,6 +86,7 @@ for idx, row in runs_df.iterrows():
         print(f"  Error extracting latents for {model_name}: {e}")
         runs_df.loc[idx, ['micro_accuracy','macro_precision','macro_recall','macro_f1',
                           'weighted_precision','weighted_recall','weighted_f1']] = [np.nan]*7
+        _persist_results(runs_df)
         continue
 
     patch_level_latents_df_train['patient_id'] = patch_level_latents_df_train['image_path'].apply(
@@ -88,22 +101,54 @@ for idx, row in runs_df.iterrows():
         patch_level_latents_df_train = patch_level_latents_df_train[patch_level_latents_df_train['patch_in_mask'] == 1].reset_index(drop=True)
         patch_level_latents_df_test = patch_level_latents_df_test[patch_level_latents_df_test['patch_in_mask'] == 1].reset_index(drop=True)
 
+    def _sort_group_patches(g):
+        """Return group DataFrame sorted by numeric patch id.
+
+        Strategy:
+        - If column `patch_id` exists, sort by it.
+        - Otherwise try to parse a trailing integer from `image_path` basename
+          (last underscore-separated token before extension).
+        - If parsing fails, preserve original order.
+        """
+        if 'patch_id' in g.columns:
+            try:
+                return g.sort_values('patch_id')
+            except Exception:
+                return g
+
+        def _extract_from_path(x):
+            try:
+                b = os.path.basename(x)
+                name = os.path.splitext(b)[0]
+                tok = name.split('_')[-1]
+                return int(tok)
+            except Exception:
+                return None
+
+        g = g.copy()
+        g['_patch_num'] = g['image_path'].apply(_extract_from_path)
+        if g['_patch_num'].notnull().all():
+            return g.sort_values('_patch_num')
+        # if we couldn't parse numeric ids for all rows, drop helper column and return original
+        g = g.drop(columns=['_patch_num'], errors='ignore')
+        return g
+
     # --- Prepare patient-level features/labels ---
     train_patient_features = [
-        torch.tensor(np.vstack(g['patch_latent'].values), dtype=torch.float32)
+        torch.tensor(np.vstack(_sort_group_patches(g)['patch_latent'].values), dtype=torch.float32)
         for pid, g in patch_level_latents_df_train.groupby('patient_id')
     ]
     train_patient_labels = [
-        int(g['target'].mode().iat[0])
+        int(_sort_group_patches(g)['target'].mode().iat[0])
         for pid, g in patch_level_latents_df_train.groupby('patient_id')
     ]
 
     test_patient_features = [
-        torch.tensor(np.vstack(g['patch_latent'].values), dtype=torch.float32)
+        torch.tensor(np.vstack(_sort_group_patches(g)['patch_latent'].values), dtype=torch.float32)
         for pid, g in patch_level_latents_df_test.groupby('patient_id')
     ]
     test_patient_labels = [
-        int(g['target'].mode().iat[0])
+        int(_sort_group_patches(g)['target'].mode().iat[0])
         for pid, g in patch_level_latents_df_test.groupby('patient_id')
     ]
 
@@ -118,7 +163,7 @@ for idx, row in runs_df.iterrows():
     test_dataset = PatientDataset(test_patient_features, test_patient_labels)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    num_epochs = 100
+    num_epochs = 200
     criterion = nn.CrossEntropyLoss()
 
     for fold_idx, (train_idx, val_idx) in enumerate(skf.split(np.zeros(len(y)), y)):
@@ -151,10 +196,7 @@ for idx, row in runs_df.iterrows():
 
         ## ------------------------------------------------ tune PARAMS ------------------------------------------------ ##
         mil_type = 'graph'  # 'classic' or 'graph'
-        graph_type = 'grid'  # 'grid' or 'knn'
-        k_neighbors = 8  # only used if graph_type='knn'
-        connect_diagonals = False  # only used if graph_type='grid'
-
+        
         input_dim = train_dataset[0][0].shape[1]
         if mil_type == 'classic':
             if config['best_params']['use'] is False:
@@ -177,16 +219,63 @@ for idx, row in runs_df.iterrows():
                 else:
                     raise ValueError(f"Unknown optimizer: {best_params['optimizer']}")
         elif mil_type == 'graph':
-            model = GraphMIL(input_dim=input_dim,
-                             gnn_type='gcn',
-                             gnn_hidden=128,
-                             gnn_layers=2,
-                             gnn_dropout=0.75,
-                             att_dim=64,
-                             pool_dropout=0.0,
-                             classifier_dim=64,
-                             num_classes=7).to(device)
-            optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+            if config.get('best_params_graph-mil', {}).get('use', False):
+                # Use best hyperparameters from config
+                best_params = config['best_params_graph-mil']
+                graph_type = best_params.get('graph_type', 'grid')
+                k_neighbors = best_params.get('k_neighbors', 8)
+                connect_diagonals = best_params.get('connect_diagonals', False)
+                
+                model = GraphMIL(input_dim=input_dim,
+                                 gnn_type=best_params.get('gnn_type', 'gcn'),
+                                 gnn_hidden=best_params.get('gnn_hidden', 128),
+                                 gnn_layers=best_params.get('gnn_layers', 2),
+                                 gnn_dropout=best_params.get('gnn_dropout', 0.5),
+                                 gnn_heads=best_params.get('gnn_heads', 4),
+                                 gnn_concat=best_params.get('gnn_concat', True),
+                                 att_dim=best_params.get('att_dim', 64),
+                                 att_heads=best_params.get('att_heads', 4),
+                                 pool_dropout=best_params.get('pool_dropout', 0.3),
+                                 classifier_dim=best_params.get('classifier_dim', 128),
+                                 classifier_light=best_params.get('classifier_light', False),
+                                 num_classes=7,
+                                 use_residual=best_params.get('use_residual', True),
+                                 use_layer_norm=best_params.get('use_layer_norm', True)).to(device)
+                
+                opt_name = best_params.get('optimizer', 'adam')
+                lr = best_params.get('lr', 1e-4)
+                weight_decay = best_params.get('weight_decay', 1e-5)
+                
+                if opt_name == 'adam':
+                    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+                elif opt_name == 'adamw':
+                    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+                elif opt_name == 'sgd':
+                    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=weight_decay)
+                else:
+                    raise ValueError(f"Unknown optimizer: {opt_name}")
+            else:
+                # Use default hyperparameters
+                graph_type = 'grid'
+                k_neighbors = 8
+                connect_diagonals = False
+                
+                model = GraphMIL(input_dim=input_dim,
+                                 gnn_type='gcn',
+                                 gnn_hidden=128,
+                                 gnn_layers=2,
+                                 gnn_dropout=0.75,
+                                 gnn_heads=4,
+                                 gnn_concat=True,
+                                 att_dim=64,
+                                 att_heads=4,
+                                 pool_dropout=0.0,
+                                 classifier_dim=64,
+                                 classifier_light=False,
+                                 num_classes=7,
+                                 use_residual=True,
+                                 use_layer_norm=True).to(device)
+                optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
             
         else:
             raise ValueError(f"Unsupported mil_type: {mil_type}; choose 'classic' or 'graph'")
@@ -315,15 +404,8 @@ for idx, row in runs_df.iterrows():
     runs_df.loc[idx, 'weighted_recall_std'] = agg_std['weighted_r']
     runs_df.loc[idx, 'weighted_f1_std'] = agg_std['weighted_f1']
 
-output_dir = os.path.join(os.getcwd(), "mil_results")
-os.makedirs(output_dir, exist_ok=True)
+    # Persist after each model to avoid losing progress mid-run
+    _persist_results(runs_df)
 
-date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-out_pickle = os.path.join(output_dir, f"runs_df_mil_results_{date_str}.pkl")
-out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}.csv")
-
-runs_df.to_pickle(out_pickle)
-runs_df.to_csv(out_csv, index=False)
-
-print(f"\nSaved runs results to {output_dir}: {out_pickle}, {out_csv}")
+print(f"\nSaved runs results to {out_csv}")
 # %%
