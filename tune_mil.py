@@ -27,13 +27,9 @@ def main():
         config_path="config.yml",
         # model_name="a9d7feb3402a4670bbcfa73f534acab7.pth",  # <-- the AE model basename to use
         model_name="e6b29aa3b47145ec935e675a13c4b71d.pth",
-        num_samples=2000,
-        # Allow a large default so the script can cap based on available resources
+        num_samples=600,
         max_concurrent=999,
-        # Reduce per-trial CPU by default so we can run more trials concurrently
         cpus_per_trial=8.0,
-        # Allow fractional GPU allocation so multiple trials can share a single GPU
-        # (needs per-process memory fraction enforcement in the training code)
         gpus_per_trial=(0.25 if torch.cuda.is_available() else 0.0),
         num_workers=min(8, max(1, (os.cpu_count() or 1) // 2)),
         pin_memory=False,
@@ -184,27 +180,31 @@ def main():
     # }
 
     search_space_graph = {
-        # GNN architecture choices (updated)
+        # GNN architecture choices
         "gnn_type": tune.choice(["gcn", "gat", "gin", "graphsage", "transformer"]),
         "gnn_hidden": tune.choice([64, 128, 256, 384, 512]),
-        "gnn_layers": tune.choice([2, 3, 4, 5, 6, 7]),
-        "gnn_dropout": tune.choice([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
+        "gnn_layers": tune.choice([2, 3, 4, 5, 6, 7, 8]),
+        "gnn_dropout": tune.choice([0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
+        "gnn_heads": tune.choice([1, 2, 4, 8]),
+        "gnn_concat": tune.choice([True, False]),
 
-        # Additional graph construction parameter
-        # "k_neighbors": tune.choice([4, 8, 12, 16]),
+        # Additional graph construction parameters
+        "graph_type": tune.choice(["grid", "knn"]),
+        "k_neighbors": tune.choice([4, 8, 12, 16]),
         'connect_diagonals': tune.choice([False, True]),
 
-        # MIL pooling / classifier (updated)
-        "att_dim": tune.choice([64, 128, 256, 512]),
+        # MIL pooling / classifier
+        "att_dim": tune.choice([64, 128, 256, 384, 512]),
         "att_heads": tune.choice([1, 2, 4, 8]),
-        "pool_dropout": tune.choice([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
+        "pool_dropout": tune.choice([0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
         "classifier_dim": tune.choice([64, 128, 256, 384, 512]),
+        "classifier_light": tune.choice([True, False]),
 
         # Architectural flags
         "use_residual": tune.choice([True, False]),
         "use_layer_norm": tune.choice([True, False]),
 
-        # Optimization (updated)
+        # Optimization
         "optimizer": tune.choice(["adam", "adamw"]),
         "lr": tune.loguniform(1e-6, 1e-3),
         "weight_decay": tune.loguniform(1e-8, 1e-3),
