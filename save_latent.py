@@ -51,7 +51,7 @@ def extract_latents(config, path, remove_background=False):
     ae_model.eval()
 
     with torch.no_grad():
-        def extract_latents(loader):
+        def _extract_latents_from_loader(loader):
             pooled_list = []
             raw_list = []
             for batch in loader:
@@ -100,8 +100,8 @@ def extract_latents(config, path, remove_background=False):
             return pooled_df_all, raw_df_all
 
         # extract for train/val and test
-        latent_pooled_train, latent_raw_train = extract_latents(train_val_loader)
-        latent_pooled_test, latent_raw_test = extract_latents(test_loader)
+        latent_pooled_train, latent_raw_train = _extract_latents_from_loader(train_val_loader)
+        latent_pooled_test, latent_raw_test = _extract_latents_from_loader(test_loader)
 
     # build patch-level latents from raw df
     def build_patch_level_df(latent_raw_df, remove=True):
@@ -156,23 +156,29 @@ def extract_latents(config, path, remove_background=False):
     print(f"Total lesion-overlapping patches (train_val): {train_count}")
     print(f"Total lesion-overlapping patches (test): {test_count}")
 
-    if len(patch_level_train_df) > 0:
-        X_patches_train = np.vstack(patch_level_train_df["patch_latent"].values)
-        pca = PCA(n_components=0.90, whiten=False)
-        X_pca_train = pca.fit_transform(X_patches_train)
-        print(f"PCA reduced dimensions from {X_patches_train.shape[1]} to {X_pca_train.shape[1]}")
-        patch_level_train_df['patch_latent_pca'] = list(X_pca_train)
-    else:
-        patch_level_train_df['patch_latent_pca'] = []
+    pca_enabled = bool(config.get('pca', False))
+    if pca_enabled:
+        if len(patch_level_train_df) > 0:
+            X_patches_train = np.vstack(patch_level_train_df["patch_latent"].values)
+            pca = PCA(n_components=0.90, whiten=False)
+            X_pca_train = pca.fit_transform(X_patches_train)
+            print(f"PCA reduced dimensions from {X_patches_train.shape[1]} to {X_pca_train.shape[1]}")
+            patch_level_train_df['patch_latent_pca'] = list(X_pca_train)
+        else:
+            patch_level_train_df['patch_latent_pca'] = []
 
-    if len(patch_level_test_df) > 0:
-        if len(patch_level_train_df) == 0:
-            raise RuntimeError("No train patches to fit PCA. Cannot transform test patches.")
-        X_patches_test = np.vstack(patch_level_test_df["patch_latent"].values)
-        X_pca_test = pca.transform(X_patches_test)
-        patch_level_test_df['patch_latent_pca'] = list(X_pca_test)
+        if len(patch_level_test_df) > 0:
+            if len(patch_level_train_df) == 0:
+                raise RuntimeError("No train patches to fit PCA. Cannot transform test patches.")
+            X_patches_test = np.vstack(patch_level_test_df["patch_latent"].values)
+            X_pca_test = pca.transform(X_patches_test)
+            patch_level_test_df['patch_latent_pca'] = list(X_pca_test)
+        else:
+            patch_level_test_df['patch_latent_pca'] = []
     else:
-        patch_level_test_df['patch_latent_pca'] = []
+        print("PCA disabled via config; using raw patch_latent as patch_latent_pca.")
+        patch_level_train_df['patch_latent_pca'] = patch_level_train_df['patch_latent']
+        patch_level_test_df['patch_latent_pca'] = patch_level_test_df['patch_latent']
 
     # SAVE DATAFRAMES ------------------------------------------------------
     save_files = False
