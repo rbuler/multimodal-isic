@@ -1,6 +1,8 @@
 # %% IMPORTS
 import os
 import yaml
+import pandas as pd
+import uuid
 import torch
 import random
 import numpy as np
@@ -18,6 +20,44 @@ from utils import get_args_parser
 from utils_g_mil import AttentionMIL, PatientDataset, GraphMIL, build_graph
 
 
+def _evaluate_model(state_dict):
+            if state_dict is not None:
+                model.load_state_dict(state_dict)
+            model.eval()
+            y_true = []
+            y_score = []
+            with torch.no_grad():
+                for x, y_batch in test_loader:
+                    x = x[0].to(device)
+                    y_long = y_batch.to(device).long()
+                    if mil_type == 'graph':
+                        adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                            x, graph_type=graph_type, k=k_neighbors,
+                            connect_diagonals=connect_diagonals, device=device)
+                        probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
+                                         edge_index=edge_index, edge_weight=edge_weight)
+                    else:
+                        probs, att = model(x)
+                    y_true.append(int(y_long.item()))
+                    y_score.append(probs.cpu().numpy())
+
+            if len(y_true) == 0:
+                return {k: np.nan for k in ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']}
+
+            y_true_arr = np.array(y_true)
+            y_score_arr = np.vstack(y_score)
+            y_pred_arr = np.argmax(y_score_arr, axis=1)
+
+            micro_acc = accuracy_score(y_true_arr, y_pred_arr)
+            macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='macro', zero_division=0)
+            weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='weighted', zero_division=0)
+
+            return {'micro': micro_acc,
+                    'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
+                    'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1}
+
+
+
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
 with open(args.config_path) as file:
@@ -26,7 +66,7 @@ with open(args.config_path) as file:
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
 # experiment_ids = list(range(798, 814)) + list(range(726, 732))
-experiment_ids = [805]
+experiment_ids = [726, 799, 802, 803, 804, 805]
 
 
 runs_df = fetch_experiment(experiment_ids=experiment_ids)
@@ -44,18 +84,17 @@ runs_df['weighted_precision'] = 0.0
 runs_df['weighted_recall'] = 0.0
 runs_df['weighted_f1'] = 0.0
 
+results_rows = []
+
 SEED = config['seed']
 
-# Prepare output paths once and persist after each run to avoid losing partial results
 output_dir = os.path.join(os.getcwd(), "mil_results")
 os.makedirs(output_dir, exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-device_name = f"cuda{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"
-out_pickle = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{device_name}.pkl")
-out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{device_name}.csv")
+unique_id = uuid.uuid4().hex[:6]
+out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{unique_id}.csv")
 
 def _persist_results(df):
-    df.to_pickle(out_pickle)
     df.to_csv(out_csv, index=False)
 
 torch.backends.cudnn.deterministic = True
@@ -158,7 +197,8 @@ for idx, row in runs_df.iterrows():
     skf = StratifiedKFold(n_splits=SPLITS, shuffle=True, random_state=SEED)
     y = np.array(train_patient_labels)
 
-    fold_test_metrics = []
+    fold_test_metrics_bacc = []
+    fold_test_metrics_loss = []
 
     test_dataset = PatientDataset(test_patient_features, test_patient_labels)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
@@ -280,9 +320,12 @@ for idx, row in runs_df.iterrows():
         else:
             raise ValueError(f"Unsupported mil_type: {mil_type}; choose 'classic' or 'graph'")
         ## ------------------------------------------------------------------------------------------------------------- ##
-
+        patience = config.get('patience', 8)
+        epochs_no_improve = 0
         best_val_bacc = -np.inf
-        best_state = None
+        best_state_bacc = None
+        best_val_loss = float('inf')
+        best_state_loss = None
 
         for epoch in range(1, num_epochs + 1):
             model.train()
@@ -306,6 +349,7 @@ for idx, row in runs_df.iterrows():
             model.eval()
             y_true = []
             y_score = []
+            val_loss_sum = 0.0
             with torch.no_grad():
                 for x, y_batch in val_loader:
                     x = x[0].to(device)
@@ -318,6 +362,7 @@ for idx, row in runs_df.iterrows():
                                          edge_index=edge_index, edge_weight=edge_weight)
                     else:
                         probs, att = model(x)
+                    val_loss_sum += criterion(torch.log(probs + 1e-9).unsqueeze(0), y_long).item()
                     y_true.append(int(y_long.item()))
                     y_score.append(probs.cpu().numpy())
 
@@ -333,79 +378,95 @@ for idx, row in runs_df.iterrows():
             except Exception:
                 pass
             val_bacc = balanced_accuracy_score(y_true, y_pred)
+            val_loss = val_loss_sum / len(val_loader)
 
             if val_bacc > best_val_bacc + 1e-6:
                 best_val_bacc = val_bacc
-                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                best_state_bacc = {k: v.cpu().clone() for k, v in model.state_dict().items()}
 
-        if best_state is not None:
-            model.load_state_dict(best_state)
+            if val_loss < best_val_loss - 1e-6:
+                epochs_no_improve = 0
+                best_val_loss = val_loss
+                best_state_loss = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            else:
+                epochs_no_improve += 1
 
-        model.eval()
-        y_true = []
-        y_score = []
-        with torch.no_grad():
-            for x, y_batch in test_loader:
-                x = x[0].to(device)
-                y_long = y_batch.to(device).long()
-                if mil_type == 'graph':
-                    adj_norm, adj_mask, edge_index, edge_weight = build_graph(
-                        x, graph_type=graph_type, k=k_neighbors,
-                        connect_diagonals=connect_diagonals, device=device)
-                    probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
-                                     edge_index=edge_index, edge_weight=edge_weight)
-                else:
-                    probs, att = model(x)
-                y_true.append(int(y_long.item()))
-                y_score.append(probs.cpu().numpy())
+            print(f"    Epoch {epoch:03d}: Val BAcc: {val_bacc:.4f} (best: {best_val_bacc:.4f}, no improve: {epochs_no_improve})  | Val Loss: {val_loss:.4f} (best: {best_val_loss:.4f})")
+            
+            if epochs_no_improve >= patience:
+                print(f"    Early stopping at epoch {epoch}")
+                break
 
-        if len(y_true) == 0:
-            print("  No test samples available, recording NaNs for this fold")
-            fold_test_metrics.append({k: np.nan for k in ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']})
-            continue
-
-        y_true = np.array(y_true)
-        y_score = np.vstack(y_score)
-        y_pred = np.argmax(y_score, axis=1)
-
-        micro_acc = accuracy_score(y_true, y_pred)
-        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
-        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
-
-        fold_test_metrics.append({'micro': micro_acc,
-                                  'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
-                                  'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1})
-
+        # ---------------- Test evaluations for both checkpoints ----------------
+        
+        metrics_best_bacc = _evaluate_model(best_state_bacc)
+        metrics_best_loss = _evaluate_model(best_state_loss if best_state_loss is not None else best_state_bacc)
+        fold_test_metrics_bacc.append(metrics_best_bacc)
+        fold_test_metrics_loss.append(metrics_best_loss)
+        
     metrics_keys = ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']
-    agg_mean = {}
-    agg_std = {}
+    agg_mean_bacc, agg_std_bacc = {}, {}
+    agg_mean_loss, agg_std_loss = {}, {}
     for k in metrics_keys:
-        vals = np.array([m[k] for m in fold_test_metrics], dtype=np.float64)
-        if np.all(np.isnan(vals)):
-            agg_mean[k] = np.nan
-            agg_std[k] = np.nan
+        vals_bacc = np.array([m[k] for m in fold_test_metrics_bacc], dtype=np.float64)
+        vals_loss = np.array([m[k] for m in fold_test_metrics_loss], dtype=np.float64)
+
+        if np.all(np.isnan(vals_bacc)):
+            agg_mean_bacc[k] = np.nan
+            agg_std_bacc[k] = np.nan
         else:
-            agg_mean[k] = float(np.nanmean(vals))
-            agg_std[k] = float(np.nanstd(vals, ddof=0))
+            agg_mean_bacc[k] = float(np.nanmean(vals_bacc))
+            agg_std_bacc[k] = float(np.nanstd(vals_bacc, ddof=0))
 
-    runs_df.loc[idx, 'micro_accuracy'] = agg_mean['micro']
-    runs_df.loc[idx, 'macro_precision'] = agg_mean['macro_p']
-    runs_df.loc[idx, 'macro_recall'] = agg_mean['macro_r']
-    runs_df.loc[idx, 'macro_f1'] = agg_mean['macro_f1']
-    runs_df.loc[idx, 'weighted_precision'] = agg_mean['weighted_p']
-    runs_df.loc[idx, 'weighted_recall'] = agg_mean['weighted_r']
-    runs_df.loc[idx, 'weighted_f1'] = agg_mean['weighted_f1']
+        if np.all(np.isnan(vals_loss)):
+            agg_mean_loss[k] = np.nan
+            agg_std_loss[k] = np.nan
+        else:
+            agg_mean_loss[k] = float(np.nanmean(vals_loss))
+            agg_std_loss[k] = float(np.nanstd(vals_loss, ddof=0))
 
-    runs_df.loc[idx, 'micro_accuracy_std'] = agg_std['micro']
-    runs_df.loc[idx, 'macro_precision_std'] = agg_std['macro_p']
-    runs_df.loc[idx, 'macro_recall_std'] = agg_std['macro_r']
-    runs_df.loc[idx, 'macro_f1_std'] = agg_std['macro_f1']
-    runs_df.loc[idx, 'weighted_precision_std'] = agg_std['weighted_p']
-    runs_df.loc[idx, 'weighted_recall_std'] = agg_std['weighted_r']
-    runs_df.loc[idx, 'weighted_f1_std'] = agg_std['weighted_f1']
 
-    # Persist after each model to avoid losing progress mid-run
-    _persist_results(runs_df)
+    row_bacc = {
+        'checkpoint_type': 'best_bacc',
+        'micro_accuracy': agg_mean_bacc['micro'],
+        'macro_precision': agg_mean_bacc['macro_p'],
+        'macro_recall': agg_mean_bacc['macro_r'],
+        'macro_f1': agg_mean_bacc['macro_f1'],
+        'weighted_precision': agg_mean_bacc['weighted_p'],
+        'weighted_recall': agg_mean_bacc['weighted_r'],
+        'weighted_f1': agg_mean_bacc['weighted_f1'],
+        'micro_accuracy_std': agg_std_bacc['micro'],
+        'macro_precision_std': agg_std_bacc['macro_p'],
+        'macro_recall_std': agg_std_bacc['macro_r'],
+        'macro_f1_std': agg_std_bacc['macro_f1'],
+        'weighted_precision_std': agg_std_bacc['weighted_p'],
+        'weighted_recall_std': agg_std_bacc['weighted_r'],
+        'weighted_f1_std': agg_std_bacc['weighted_f1'],
+    }
+
+    row_loss = {
+        'checkpoint_type': 'best_loss',
+        'micro_accuracy': agg_mean_loss['micro'],
+        'macro_precision': agg_mean_loss['macro_p'],
+        'macro_recall': agg_mean_loss['macro_r'],
+        'macro_f1': agg_mean_loss['macro_f1'],
+        'weighted_precision': agg_mean_loss['weighted_p'],
+        'weighted_recall': agg_mean_loss['weighted_r'],
+        'weighted_f1': agg_mean_loss['weighted_f1'],
+        'micro_accuracy_std': agg_std_loss['micro'],
+        'macro_precision_std': agg_std_loss['macro_p'],
+        'macro_recall_std': agg_std_loss['macro_r'],
+        'macro_f1_std': agg_std_loss['macro_f1'],
+        'weighted_precision_std': agg_std_loss['weighted_p'],
+        'weighted_recall_std': agg_std_loss['weighted_r'],
+        'weighted_f1_std': agg_std_loss['weighted_f1'],
+    }
+
+    results_rows.append(row_bacc)
+    results_rows.append(row_loss)
+
+    # Persist accumulated results after each model to avoid losing progress mid-run
+    _persist_results(pd.DataFrame(results_rows))
 
 print(f"\nSaved runs results to {out_csv}")
 # %%
