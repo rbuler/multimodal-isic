@@ -320,7 +320,7 @@ for idx, row in runs_df.iterrows():
         else:
             raise ValueError(f"Unsupported mil_type: {mil_type}; choose 'classic' or 'graph'")
         ## ------------------------------------------------------------------------------------------------------------- ##
-        patience = config.get('patience', 8)
+        patience = config.get('training_plan', {}).get('parameters', {}).get('patience', 8)
         epochs_no_improve = 0
         best_val_bacc = -np.inf
         best_state_bacc = None
@@ -391,7 +391,7 @@ for idx, row in runs_df.iterrows():
             else:
                 epochs_no_improve += 1
 
-            print(f"    Epoch {epoch:03d}: Val BAcc: {val_bacc:.4f} (best: {best_val_bacc:.4f}, no improve: {epochs_no_improve})  | Val Loss: {val_loss:.4f} (best: {best_val_loss:.4f})")
+            print(f"    Epoch {epoch:03d}: Val BAcc: {val_bacc:.4f} (best: {best_val_bacc:.4f})  | Val Loss: {val_loss:.4f} (best: {best_val_loss:.4f} ) | Epochs no improve: {epochs_no_improve}/{patience}")
             
             if epochs_no_improve >= patience:
                 print(f"    Early stopping at epoch {epoch}")
@@ -445,6 +445,7 @@ for idx, row in runs_df.iterrows():
     }
 
     row_loss = {
+        'id': row['sys/id'],
         'checkpoint_type': 'best_loss',
         'micro_accuracy': agg_mean_loss['micro'],
         'macro_precision': agg_mean_loss['macro_p'],
