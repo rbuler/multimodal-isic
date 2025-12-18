@@ -403,6 +403,16 @@ for idx, row in runs_df.iterrows():
         metrics_best_loss = _evaluate_model(best_state_loss if best_state_loss is not None else best_state_bacc)
         fold_test_metrics_bacc.append(metrics_best_bacc)
         fold_test_metrics_loss.append(metrics_best_loss)
+
+    # print model, optimizer, graph params
+    print("Model and training parameters:")
+    print(f"  MIL type: {mil_type}")
+    if mil_type == 'graph':
+        print(f"  Graph type: {graph_type}, k_neighbors: {k_neighbors}, connect_diagonals: {connect_diagonals}")
+    print(f"  Num epochs: {num_epochs}, Patience: {patience}")
+    print(f"  Criterion: CrossEntropyLoss")
+    print(f"  Optimizer: {optimizer.__class__.__name__}, LR: {optimizer.param_groups[0]['lr']}, Weight Decay: {optimizer.param_groups[0]['weight_decay']}")
+    print(f"Model Graph-MIL with hyperparameters:", model)
         
     metrics_keys = ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']
     agg_mean_bacc, agg_std_bacc = {}, {}
@@ -427,6 +437,7 @@ for idx, row in runs_df.iterrows():
 
 
     row_bacc = {
+        'id': row['sys/id'],
         'checkpoint_type': 'best_bacc',
         'micro_accuracy': agg_mean_bacc['micro'],
         'macro_precision': agg_mean_bacc['macro_p'],
