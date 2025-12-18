@@ -27,7 +27,7 @@ def main():
         config_path="config.yml",
         # model_name="a9d7feb3402a4670bbcfa73f534acab7.pth",  # <-- the AE model basename to use
         model_name="e6b29aa3b47145ec935e675a13c4b71d.pth",
-        num_samples=600,
+        num_samples=1000,
         max_concurrent=999,
         cpus_per_trial=8.0,
         gpus_per_trial=(0.25 if torch.cuda.is_available() else 0.0),
@@ -148,7 +148,14 @@ def main():
         grace_period=10,
         reduction_factor=2)
 
-    reporter = CLIReporter(metric_columns=["val_bacc", "val_acc", "val_auc", "training_iteration"])
+    reporter = CLIReporter(metric_columns=[
+        "val_bacc", "val_acc", "val_auc", "val_loss",
+        "best_val_bacc", "best_val_loss",
+        "test_bacc_from_best_val_bacc", "test_bacc_from_best_val_loss",
+        "test_acc_from_best_val_bacc", "test_acc_from_best_val_loss",
+        "test_auc_from_best_val_bacc", "test_auc_from_best_val_loss",
+        "training_iteration"
+    ])
 
     # Define both search spaces and select based on args.tune_type
     search_space_mil = {
@@ -160,28 +167,10 @@ def main():
         "weight_decay": tune.uniform(0, 1e-3),
     }
 
-    # search_space_graph = {
-    #     # GNN architecture choices
-    #     "gnn_type": tune.choice(["gcn", "gat"]),
-    #     "gnn_hidden": tune.randint(32, 513),
-    #     "gnn_layers": tune.randint(1, 8),
-    #     "gnn_dropout": tune.uniform(0.0, 0.75),
-    #     "connect_diagonals": tune.choice([False, True]),
-
-    #     # MIL pooling / classifier
-    #     "att_dim": tune.randint(16, 512),
-    #     "pool_dropout": tune.uniform(0.0, 0.75),
-    #     "classifier_dim": tune.randint(16, 512),
-
-    #     # optimization
-    #     "optimizer": tune.choice(["adam", "adamw", "sgd"]),
-    #     "lr": tune.loguniform(1e-6, 1e-3),
-    #     "weight_decay": tune.loguniform(1e-8, 1e-3),
-    # }
-
     search_space_graph = {
         # GNN architecture choices
-        "gnn_type": tune.choice(["gcn", "gat", "gin", "graphsage", "transformer"]),
+        # "gnn_type": tune.choice(["gcn", "gat", "gin", "graphsage", "transformer"]),
+        "gnn_type": tune.choice(["gat", "transformer"]),
         "gnn_hidden": tune.choice([64, 128, 256, 384, 512]),
         "gnn_layers": tune.choice([2, 3, 4, 5, 6, 7, 8]),
         "gnn_dropout": tune.choice([0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
@@ -262,6 +251,9 @@ def main():
         progress_reporter=reporter,
         max_concurrent_trials=args.max_concurrent,
         fail_fast=False,
+        local_dir="tune_mil_outputs/ray_results",
+        name=f"ray_tune_{tune_type}_"+datetime.now().strftime("%y%m%d_%H%M%S"),
+        max_failures=args.max_failures,
     )
 
     ts = datetime.now().strftime("%y%m%d%H%M%S")
@@ -272,8 +264,8 @@ def main():
     out_dir = "./tune_mil_outputs"
     os.makedirs(out_dir, exist_ok=True)
 
-    results_path = os.path.join(out_dir, f"ray_tune_results_{ts}.csv")
-    config_path = os.path.join(out_dir, f"best_config_{ts}.yaml")
+    results_path = os.path.join(out_dir, f"0ray_tune_results_{ts}.csv")
+    config_path = os.path.join(out_dir, f"0best_config_{ts}.yaml")
 
     best_df.to_csv(results_path, index=False)
     with open(config_path, "w") as wf:
