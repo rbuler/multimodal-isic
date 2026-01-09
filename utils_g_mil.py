@@ -1,3 +1,4 @@
+import copy
 import os
 import random
 import numpy as np
@@ -94,9 +95,38 @@ def train_mil(config, data=None, seed=42, num_classes=7, device_str=None, patien
     test_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data.get('test_feats', [])]
     test_labels = [int(l) for l in data.get('test_labels', [])]
 
-    train_loader, val_loader = get_data_loaders(train_feats, train_labels, test_feats, test_labels,
-                                                num_workers=int(data.get('num_workers', 0)),
-                                                pin_memory=bool(data.get('pin_memory', False)))
+    # Split original training into train/val (held-out test remains separate)
+    from sklearn.model_selection import StratifiedShuffleSplit
+    num_workers = int(data.get('num_workers', 0))
+    pin_memory = bool(data.get('pin_memory', False))
+
+    labels_np = np.array(train_labels)
+    idx_all = np.arange(len(train_labels))
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
+    train_idx, val_idx = next(sss.split(idx_all.reshape(-1, 1), labels_np))
+
+    train_split_feats = [train_feats[i] for i in train_idx]
+    train_split_labels = [int(train_labels[i]) for i in train_idx]
+    val_split_feats = [train_feats[i] for i in val_idx]
+    val_split_labels = [int(train_labels[i]) for i in val_idx]
+
+    train_dataset = PatientDataset(train_split_feats, train_split_labels)
+    val_dataset = PatientDataset(val_split_feats, val_split_labels)
+    test_dataset = PatientDataset(test_feats, test_labels)
+
+    # Weighted sampler on the training split
+    patient_labels = np.array(train_split_labels)
+    patient_class_counts = Counter(patient_labels)
+    weights = np.array([1.0 / patient_class_counts[int(lbl)] for lbl in patient_labels], dtype=np.float64)
+    sample_weights = torch.from_numpy(weights)
+    sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=1, sampler=sampler, drop_last=False,
+                              num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False,
+                            num_workers=max(0, num_workers//2), pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False,
+                             num_workers=max(0, num_workers//2), pin_memory=pin_memory)
 
     input_dim = train_feats[0].shape[1] if len(train_feats) > 0 else data.get('input_dim', 76)
 
@@ -116,7 +146,56 @@ def train_mil(config, data=None, seed=42, num_classes=7, device_str=None, patien
         raise ValueError(f"Unsupported optimizer: {config['optimizer']}")
     
     criterion = nn.CrossEntropyLoss()
-    best_val_bacc = -np.inf
+
+    def _evaluate_split(model_obj, loader):
+        """Return loss/metrics for a given loader."""
+        model_obj.eval()
+        y_true, y_score = [], []
+        loss_sum = 0.0
+        with torch.no_grad():
+            for x, y in loader:
+                x = x[0].to(device)
+                y_long = y.to(device).long()
+                probs, _ = model_obj(x)
+                loss = criterion(torch.log(probs.unsqueeze(0) + 1e-9), y_long)
+                loss_sum += float(loss.item())
+                y_true.append(int(y_long.item()))
+                y_score.append(probs.cpu().numpy())
+
+        if len(y_true) == 0:
+            return {
+                'loss': float('nan'), 'acc': float('nan'), 'bacc': float('nan'), 'auc': float('nan'),
+                'macro_p': float('nan'), 'macro_r': float('nan'), 'macro_f1': float('nan'),
+                'weighted_p': float('nan'), 'weighted_r': float('nan'), 'weighted_f1': float('nan')
+            }
+
+        y_true = np.array(y_true)
+        y_score = np.vstack(y_score)
+        y_pred = np.argmax(y_score, axis=1)
+        try:
+            auc_val = roc_auc_score(y_true, y_score, multi_class='ovr')
+        except Exception:
+            auc_val = float('nan')
+        acc_val = accuracy_score(y_true, y_pred)
+        bacc_val = balanced_accuracy_score(y_true, y_pred)
+        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
+        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
+        return {
+            'loss': loss_sum / len(loader), 'acc': acc_val, 'bacc': bacc_val, 'auc': auc_val,
+            'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
+            'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1
+        }
+
+    best_by_bacc = {
+        'state': None,
+        'val_metrics': None,
+        'val_bacc': -np.inf
+    }
+    best_by_loss = {
+        'state': None,
+        'val_metrics': None,
+        'val_loss': np.inf
+    }
     epochs_no_improve = 0
 
     for epoch in range(1, max_epochs + 1):
@@ -130,47 +209,80 @@ def train_mil(config, data=None, seed=42, num_classes=7, device_str=None, patien
             loss.backward()
             optimizer.step()
 
-        model.eval()
-        y_true = []
-        y_score = []
-        with torch.no_grad():
-            for x, y in val_loader:
-                x = x[0].to(device)
-                y_long = y.to(device).long()
-                probs, _ = model(x)
-                y_true.append(int(y_long.item()))
-                y_score.append(probs.cpu().numpy())
+        val_metrics = _evaluate_split(model, val_loader)
 
-        if len(y_true) == 0:
-            tune.report({'val_bacc': float('nan')})
-            return
-
-        y_true = np.array(y_true)
-        y_score = np.vstack(y_score)
-        y_pred = np.argmax(y_score, axis=1)
-        try:
-            val_auc = roc_auc_score(y_true, y_score, multi_class='ovr')
-        except Exception:
-            val_auc = float('nan')
-        val_acc = accuracy_score(y_true, y_pred)
-        val_bacc = balanced_accuracy_score(y_true, y_pred)
-        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
-        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
-
-        tune.report({
-            'val_bacc': val_bacc, 'val_acc': val_acc, 'val_auc': val_auc,
-            'macro_precision': macro_p, 'macro_recall': macro_r, 'macro_f1': macro_f1,
-            'weighted_precision': weighted_p, 'weighted_recall': weighted_r, 'weighted_f1': weighted_f1
-        })
-
-        if val_bacc > best_val_bacc + 1e-6:
-            best_val_bacc = val_bacc
+        # Track best checkpoints by validation bacc and loss
+        if val_metrics['bacc'] > best_by_bacc['val_bacc'] + 1e-6:
+            best_by_bacc['val_bacc'] = val_metrics['bacc']
+            best_by_bacc['val_metrics'] = val_metrics
+            best_by_bacc['state'] = copy.deepcopy(model.state_dict())
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
 
+        if val_metrics['loss'] < best_by_loss['val_loss'] - 1e-6:
+            best_by_loss['val_loss'] = val_metrics['loss']
+            best_by_loss['val_metrics'] = val_metrics
+            best_by_loss['state'] = copy.deepcopy(model.state_dict())
+
+        # Report validation metrics every epoch (val_bacc drives ASHA scheduler)
+        tune.report({
+            'val_bacc': val_metrics['bacc'],
+            'val_acc': val_metrics['acc'],
+            'val_auc': val_metrics['auc'],
+            'val_loss': val_metrics['loss'],
+            'val_macro_p': val_metrics['macro_p'],
+            'val_macro_r': val_metrics['macro_r'],
+            'val_macro_f1': val_metrics['macro_f1'],
+            'val_weighted_p': val_metrics['weighted_p'],
+            'val_weighted_r': val_metrics['weighted_r'],
+            'val_weighted_f1': val_metrics['weighted_f1'],
+        })
+
         if epochs_no_improve >= patience:
             break
+
+    # If we never improved, fall back to last model state
+    if best_by_bacc['state'] is None:
+        best_by_bacc['state'] = copy.deepcopy(model.state_dict())
+        best_by_bacc['val_metrics'] = _evaluate_split(model, val_loader)
+        best_by_bacc['val_bacc'] = best_by_bacc['val_metrics']['bacc']
+    if best_by_loss['state'] is None:
+        best_by_loss['state'] = copy.deepcopy(model.state_dict())
+        best_by_loss['val_metrics'] = _evaluate_split(model, val_loader)
+        best_by_loss['val_loss'] = best_by_loss['val_metrics']['loss']
+
+    def _test_with_state(state):
+        model.load_state_dict(state)
+        return _evaluate_split(model, test_loader)
+
+    test_best_bacc = _test_with_state(best_by_bacc['state']) if len(test_dataset) > 0 else None
+    test_best_loss = _test_with_state(best_by_loss['state']) if len(test_dataset) > 0 else None
+
+    # Final report: best val metrics + test results from best val checkpoint
+    # Must include val_bacc for Ray's strict metric checking
+    final_report = {
+        'val_bacc': best_by_bacc['val_bacc'],
+        'val_acc': best_by_bacc['val_metrics']['acc'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_auc': best_by_bacc['val_metrics']['auc'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_loss': best_by_bacc['val_metrics']['loss'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_macro_f1': best_by_bacc['val_metrics']['macro_f1'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_weighted_f1': best_by_bacc['val_metrics']['weighted_f1'] if best_by_bacc['val_metrics'] else float('nan'),
+    }
+
+    # Add test metrics from best val checkpoint
+    if test_best_bacc:
+        final_report.update({
+            'test_bacc': test_best_bacc['bacc'],
+            'test_acc': test_best_bacc['acc'],
+            'test_auc': test_best_bacc['auc'],
+            'test_loss': test_best_bacc['loss'],
+            'test_macro_f1': test_best_bacc['macro_f1'],
+            'test_weighted_f1': test_best_bacc['weighted_f1'],
+        })
+
+    # Final report so Ray records best val metrics and test evaluation
+    tune.report(final_report)
 
 
 ######################### Graph-MIL components for GNN tuning #########################
@@ -466,6 +578,28 @@ def build_graph(x, graph_type='grid', k=None, connect_diagonals=False, device=No
         k_val = 8 if k is None else int(k)
         edge_index = build_knn_edge_index(x, k=k_val, device=device)
         return None, None, edge_index, None
+    elif graph_type == 'random':
+        # Random undirected edges:
+        # - Each node samples up to 4 distinct targets (no self-loop)
+        # - We then symmetrize so targets also count as neighbors (node may end up >4 degree)
+        num_nodes = x.size(0)
+        n_connections = 4
+        src, dst = [], []
+
+        for i in range(num_nodes):
+            candidates = torch.arange(num_nodes, device=x.device)
+            candidates = candidates[candidates != i]  # avoid self-loop
+            perm = torch.randperm(candidates.numel(), device=x.device)
+            chosen = candidates[perm[:min(n_connections, candidates.numel())]]
+
+            src.extend([i] * chosen.numel())
+            dst.extend(chosen.tolist())
+
+        # Build undirected edge_index by adding reverse edges and deduplicating
+        edge_index = torch.tensor([src, dst], dtype=torch.long, device=x.device)
+        edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
+        edge_index = torch.unique(edge_index, dim=1)
+        return None, None, edge_index, None
 
     else:
         raise ValueError(f"Unsupported graph_type='{graph_type}'. Supported types: 'grid', 'knn'.")
@@ -508,9 +642,38 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
     test_feats = [torch.tensor(arr, dtype=torch.float32) for arr in data.get('test_feats', [])]
     test_labels = [int(l) for l in data.get('test_labels', [])]
 
-    train_loader, val_loader = get_data_loaders(train_feats, train_labels, test_feats, test_labels,
-                                                num_workers=int(data.get('num_workers', 0)),
-                                                pin_memory=bool(data.get('pin_memory', False)))
+    # Create loaders: stratified 80/20 split from training for validation, keep test held-out
+    from sklearn.model_selection import StratifiedShuffleSplit
+    num_workers = int(data.get('num_workers', 0))
+    pin_memory = bool(data.get('pin_memory', False))
+
+    labels_np = np.array(train_labels)
+    idx_all = np.arange(len(train_labels))
+    sss = StratifiedShuffleSplit(n_splits=1, test_size=0.2, random_state=seed)
+    train_idx, val_idx = next(sss.split(idx_all.reshape(-1, 1), labels_np))
+
+    train_split_feats = [train_feats[i] for i in train_idx]
+    train_split_labels = [int(train_labels[i]) for i in train_idx]
+    val_split_feats = [train_feats[i] for i in val_idx]
+    val_split_labels = [int(train_labels[i]) for i in val_idx]
+
+    train_dataset = PatientDataset(train_split_feats, train_split_labels)
+    val_dataset = PatientDataset(val_split_feats, val_split_labels)
+    test_dataset = PatientDataset(test_feats, test_labels)
+
+    # Weighted sampler on the training split
+    patient_labels = np.array(train_split_labels)
+    patient_class_counts = Counter(patient_labels)
+    weights = np.array([1.0 / patient_class_counts[int(lbl)] for lbl in patient_labels], dtype=np.float64)
+    sample_weights = torch.from_numpy(weights)
+    sampler = WeightedRandomSampler(weights=sample_weights, num_samples=len(sample_weights), replacement=True)
+
+    train_loader = DataLoader(train_dataset, batch_size=1, sampler=sampler, drop_last=False,
+                              num_workers=num_workers, pin_memory=pin_memory)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False,
+                            num_workers=max(0, num_workers//2), pin_memory=pin_memory)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False,
+                             num_workers=max(0, num_workers//2), pin_memory=pin_memory)
 
     input_dim = train_feats[0].shape[1] if len(train_feats) > 0 else data.get('input_dim', 76)
 
@@ -539,7 +702,61 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
         raise ValueError(f"Unsupported optimizer: {opt_name}")
 
     criterion = nn.CrossEntropyLoss()
-    best_val_bacc = -np.inf
+
+    def _evaluate_split(model_obj, loader):
+        model_obj.eval()
+        y_true, y_score = [], []
+        loss_sum = 0.0
+        with torch.no_grad():
+            for x, y in loader:
+                x = x[0].to(device)
+                y_long = y.to(device).long()
+                graph_type = config.get('graph_type', 'grid')
+                connect_diagonals = bool(config.get('connect_diagonals', False))
+                k_neighbors = config.get('k_neighbors', None)
+                adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                    x, graph_type=graph_type, k=k_neighbors,
+                    connect_diagonals=connect_diagonals, device=device)
+                probs, _ = model_obj(x, adj=adj_norm, adj_mask=adj_mask, edge_index=edge_index, edge_weight=edge_weight)
+                loss = criterion(torch.log(probs.unsqueeze(0) + 1e-9), y_long)
+                loss_sum += float(loss.item())
+                y_true.append(int(y_long.item()))
+                y_score.append(probs.cpu().numpy())
+
+        if len(y_true) == 0:
+            return {
+                'loss': float('nan'), 'acc': float('nan'), 'bacc': float('nan'), 'auc': float('nan'),
+                'macro_p': float('nan'), 'macro_r': float('nan'), 'macro_f1': float('nan'),
+                'weighted_p': float('nan'), 'weighted_r': float('nan'), 'weighted_f1': float('nan')
+            }
+
+        y_true = np.array(y_true)
+        y_score = np.vstack(y_score)
+        y_pred = np.argmax(y_score, axis=1)
+        try:
+            auc_val = roc_auc_score(y_true, y_score, multi_class='ovr')
+        except Exception:
+            auc_val = float('nan')
+        acc_val = accuracy_score(y_true, y_pred)
+        bacc_val = balanced_accuracy_score(y_true, y_pred)
+        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
+        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
+        return {
+            'loss': loss_sum / len(loader), 'acc': acc_val, 'bacc': bacc_val, 'auc': auc_val,
+            'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
+            'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1
+        }
+
+    best_by_bacc = {
+        'state': None,
+        'val_metrics': None,
+        'val_bacc': -np.inf
+    }
+    best_by_loss = {
+        'state': None,
+        'val_metrics': None,
+        'val_loss': np.inf
+    }
     epochs_no_improve = 0
 
     for epoch in range(1, max_epochs + 1):
@@ -547,11 +764,6 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
         for x, y in train_loader:
             x = x[0].to(device)  # x: [N_nodes, feat]
             y_long = y.to(device).long()
-            num_nodes = x.shape[0]
-
-            # Build graph according to configuration. `build_graph` returns a tuple
-            # (adj_norm, adj_mask, edge_index). For grid graphs we pass adj_norm,
-            # for knn graphs we pass edge_index.
             graph_type = config.get('graph_type', 'grid')
             connect_diagonals = bool(config.get('connect_diagonals', False))
             k_neighbors = config.get('k_neighbors', None)
@@ -565,52 +777,77 @@ def train_graph_mil(config, data=None, seed=42, num_classes=7, device_str=None, 
             loss.backward()
             optimizer.step()
 
-        model.eval()
-        y_true = []
-        y_score = []
-        with torch.no_grad():
-            for x, y in val_loader:
-                x = x[0].to(device)
-                y_long = y.to(device).long()
-                num_nodes = x.shape[0]
-                graph_type = config.get('graph_type', 'grid')
-                connect_diagonals = bool(config.get('connect_diagonals', False))
-                k_neighbors = config.get('k_neighbors', None)
-                adj_norm, adj_mask, edge_index, edge_weight = build_graph(
-                    x, graph_type=graph_type, k=k_neighbors,
-                    connect_diagonals=connect_diagonals, device=device)
-                probs, _ = model(x, adj=adj_norm, adj_mask=adj_mask, edge_index=edge_index, edge_weight=edge_weight)
-                y_true.append(int(y_long.item()))
-                y_score.append(probs.cpu().numpy())
+        val_metrics = _evaluate_split(model, val_loader)
 
-        if len(y_true) == 0:
-            tune.report({'val_bacc': float('nan')})
-            return
-
-        y_true = np.array(y_true)
-        y_score = np.vstack(y_score)
-        y_pred = np.argmax(y_score, axis=1)
-        try:
-            val_auc = roc_auc_score(y_true, y_score, multi_class='ovr')
-        except Exception:
-            val_auc = float('nan')
-        val_acc = accuracy_score(y_true, y_pred)
-        val_bacc = balanced_accuracy_score(y_true, y_pred)
-        macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='macro', zero_division=0)
-        weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true, y_pred, average='weighted', zero_division=0)
-
-        tune.report({
-            'val_bacc': val_bacc, 'val_acc': val_acc, 'val_auc': val_auc,
-            'macro_precision': macro_p, 'macro_recall': macro_r, 'macro_f1': macro_f1,
-            'weighted_precision': weighted_p, 'weighted_recall': weighted_r, 'weighted_f1': weighted_f1
-        })
-
-        if val_bacc > best_val_bacc + 1e-6:
-            best_val_bacc = val_bacc
+        # Track best checkpoints by validation bacc and loss
+        if val_metrics['bacc'] > best_by_bacc['val_bacc'] + 1e-6:
+            best_by_bacc['val_bacc'] = val_metrics['bacc']
+            best_by_bacc['val_metrics'] = val_metrics
+            best_by_bacc['state'] = copy.deepcopy(model.state_dict())
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
 
+        if val_metrics['loss'] < best_by_loss['val_loss'] - 1e-6:
+            best_by_loss['val_loss'] = val_metrics['loss']
+            best_by_loss['val_metrics'] = val_metrics
+            best_by_loss['state'] = copy.deepcopy(model.state_dict())
+
+        # Report validation metrics every epoch (val_bacc drives ASHA scheduler)
+        tune.report({
+            'val_bacc': val_metrics['bacc'],
+            'val_acc': val_metrics['acc'],
+            'val_auc': val_metrics['auc'],
+            'val_loss': val_metrics['loss'],
+            'val_macro_p': val_metrics['macro_p'],
+            'val_macro_r': val_metrics['macro_r'],
+            'val_macro_f1': val_metrics['macro_f1'],
+            'val_weighted_p': val_metrics['weighted_p'],
+            'val_weighted_r': val_metrics['weighted_r'],
+            'val_weighted_f1': val_metrics['weighted_f1'],
+        })
+
         if epochs_no_improve >= patience:
             break
+
+    if best_by_bacc['state'] is None:
+        best_by_bacc['state'] = copy.deepcopy(model.state_dict())
+        best_by_bacc['val_metrics'] = _evaluate_split(model, val_loader)
+        best_by_bacc['val_bacc'] = best_by_bacc['val_metrics']['bacc']
+    if best_by_loss['state'] is None:
+        best_by_loss['state'] = copy.deepcopy(model.state_dict())
+        best_by_loss['val_metrics'] = _evaluate_split(model, val_loader)
+        best_by_loss['val_loss'] = best_by_loss['val_metrics']['loss']
+
+    def _test_with_state(state):
+        model.load_state_dict(state)
+        return _evaluate_split(model, test_loader)
+
+    test_best_bacc = _test_with_state(best_by_bacc['state']) if len(test_dataset) > 0 else None
+    test_best_loss = _test_with_state(best_by_loss['state']) if len(test_dataset) > 0 else None
+
+    # Final report: best val metrics + test results from best val checkpoint
+    # Must include val_bacc for Ray's strict metric checking
+    final_report = {
+        'val_bacc': best_by_bacc['val_bacc'],
+        'val_acc': best_by_bacc['val_metrics']['acc'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_auc': best_by_bacc['val_metrics']['auc'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_loss': best_by_bacc['val_metrics']['loss'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_macro_f1': best_by_bacc['val_metrics']['macro_f1'] if best_by_bacc['val_metrics'] else float('nan'),
+        'val_weighted_f1': best_by_bacc['val_metrics']['weighted_f1'] if best_by_bacc['val_metrics'] else float('nan'),
+    }
+
+    # Add test metrics from best val checkpoint
+    if test_best_bacc:
+        final_report.update({
+            'test_bacc': test_best_bacc['bacc'],
+            'test_acc': test_best_bacc['acc'],
+            'test_auc': test_best_bacc['auc'],
+            'test_loss': test_best_bacc['loss'],
+            'test_macro_f1': test_best_bacc['macro_f1'],
+            'test_weighted_f1': test_best_bacc['weighted_f1'],
+        })
+
+    # Final report so Ray records best val metrics and test evaluation
+    tune.report(final_report)
 
