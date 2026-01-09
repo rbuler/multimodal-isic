@@ -1,5 +1,6 @@
 # %% IMPORTS
 import os
+import hashlib
 import yaml
 import pandas as pd
 import uuid
@@ -92,10 +93,23 @@ output_dir = os.path.join(os.getcwd(), "mil_results")
 os.makedirs(output_dir, exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 unique_id = uuid.uuid4().hex[:6]
-out_csv = os.path.join(output_dir, f"runs_df_mil_results_{date_str}_{unique_id}.csv")
+out_csv = os.path.join(output_dir, f"0runs_df_mil_results_{date_str}_{unique_id}.csv")
+config_out = os.path.join(output_dir, f"0config_{date_str}_{unique_id}.yml")
 
 def _persist_results(df):
+    # Save/overwrite the aggregated results CSV
     df.to_csv(out_csv, index=False)
+    # Save the exact config used (once) for reproducibility
+    try:
+        if not os.path.exists(config_out):
+            # Optionally compute and print a short hash of the config for traceability
+            cfg_bytes = yaml.dump(config, sort_keys=False).encode("utf-8")
+            cfg_hash = hashlib.sha1(cfg_bytes).hexdigest()[:8]
+            with open(config_out, 'w') as f:
+                f.write(f"# config_hash: {cfg_hash}\n")
+                f.write(yaml.dump(config, sort_keys=False))
+    except Exception as e:
+        print(f"Warning: failed to persist config to {config_out}: {e}")
 
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
@@ -126,6 +140,7 @@ for idx, row in runs_df.iterrows():
         runs_df.loc[idx, ['micro_accuracy','macro_precision','macro_recall','macro_f1',
                           'weighted_precision','weighted_recall','weighted_f1']] = [np.nan]*7
         _persist_results(runs_df)
+        
         continue
 
     patch_level_latents_df_train['patient_id'] = patch_level_latents_df_train['image_path'].apply(
