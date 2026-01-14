@@ -583,7 +583,7 @@ def build_graph(x, graph_type='grid', k=None, connect_diagonals=False, device=No
         # - Each node samples up to 4 distinct targets (no self-loop)
         # - We then symmetrize so targets also count as neighbors (node may end up >4 degree)
         num_nodes = x.size(0)
-        n_connections = 4
+        n_connections = k if k is not None else 4
         src, dst = [], []
 
         for i in range(num_nodes):
