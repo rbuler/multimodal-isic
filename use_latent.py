@@ -342,6 +342,19 @@ for idx, row in runs_df.iterrows():
         best_val_loss = float('inf')
         best_state_loss = None
 
+        # add option to freeze gnn layers and only train attention + classifier
+        freeze_gnn = config.get('best_params_graph-mil', {}).get('freeze_gnn', False)
+        freeze_gnn = False # override to never freeze for this experiment   # TEMP OVERRIDE
+        if mil_type == 'graph' and freeze_gnn:
+            print("    Freezing GNN layers, only training attention and classifier")
+            for name, param in model.named_parameters():
+                # Freeze: gnn_layers, layer_norms, input_proj, gnn_dropout
+                # Keep unfrozen: attention_layers, classifier
+                if any(x in name for x in ['gnn_layers', 'layer_norms', 'input_proj']):
+                    param.requires_grad = False
+                    # print what was frozen
+                    print(f"      Frozen parameter: {name}")
+
         for epoch in range(1, num_epochs + 1):
             model.train()
             for x, y_batch in train_loader:
