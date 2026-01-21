@@ -97,12 +97,9 @@ out_csv = os.path.join(output_dir, f"0runs_df_mil_results_{date_str}_{unique_id}
 config_out = os.path.join(output_dir, f"0config_{date_str}_{unique_id}.yml")
 
 def _persist_results(df):
-    # Save/overwrite the aggregated results CSV
     df.to_csv(out_csv, index=False)
-    # Save the exact config used (once) for reproducibility
     try:
         if not os.path.exists(config_out):
-            # Optionally compute and print a short hash of the config for traceability
             cfg_bytes = yaml.dump(config, sort_keys=False).encode("utf-8")
             cfg_hash = hashlib.sha1(cfg_bytes).hexdigest()[:8]
             with open(config_out, 'w') as f:
@@ -342,18 +339,19 @@ for idx, row in runs_df.iterrows():
         best_val_loss = float('inf')
         best_state_loss = None
 
-        # add option to freeze gnn layers and only train attention + classifier
-        freeze_gnn = config.get('best_params_graph-mil', {}).get('freeze_gnn', False)
-        freeze_gnn = False # override to never freeze for this experiment   # TEMP OVERRIDE
-        if mil_type == 'graph' and freeze_gnn:
-            print("    Freezing GNN layers, only training attention and classifier")
-            for name, param in model.named_parameters():
-                # Freeze: gnn_layers, layer_norms, input_proj, gnn_dropout
-                # Keep unfrozen: attention_layers, classifier
-                if any(x in name for x in ['gnn_layers', 'layer_norms', 'input_proj']):
-                    param.requires_grad = False
-                    # print what was frozen
-                    print(f"      Frozen parameter: {name}")
+        # temp override to never freeze gnn layers
+        # # add option to freeze gnn layers and only train attention + classifier
+        # freeze_gnn = config.get('best_params_graph-mil', {}).get('freeze_gnn', False)
+        # freeze_gnn = False # override to never freeze for this experiment   # TEMP OVERRIDE
+        # if mil_type == 'graph' and freeze_gnn:
+        #     print("    Freezing GNN layers, only training attention and classifier")
+        #     for name, param in model.named_parameters():
+        #         # Freeze: gnn_layers, layer_norms, input_proj, gnn_dropout
+        #         # Keep unfrozen: attention_layers, classifier
+        #         if any(x in name for x in ['gnn_layers', 'layer_norms', 'input_proj']):
+        #             param.requires_grad = False
+        #             # print what was frozen
+        #             print(f"      Frozen parameter: {name}")
 
         for epoch in range(1, num_epochs + 1):
             model.train()
