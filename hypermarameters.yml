@@ -1,0 +1,141 @@
+# =========================================================
+# Hyperparameter Search Space and Best Configurations
+# =========================================================
+# This file documents the hyperparameter search spaces used
+# during model selection, as well as the best-performing
+# configurations selected based on validation performance.
+# =========================================================
+# DATE: 2026-01-27
+# =========================================================
+
+
+mil_search_space:
+  hidden_dim: "integer in [32, 1024]"
+  att_dim: "integer in [32, 1024]"
+  dropout: "continuous in [0.0, 0.75]"
+  optimizer:
+    - adam
+    - adamw
+  lr: "log-uniform in [1e-7, 1e-3]"
+  weight_decay: "uniform in [0, 1e-3]"
+
+mil_best_params:
+  hidden_dim: 368
+  att_dim: 772
+  dropout: 0.71
+  optimizer: adamw
+  lr: 2.2e-4
+  weight_decay: 8.6e-4
+
+graph_mil_search_space:
+  gnn_type:
+    - gat
+    - transformer
+  gnn_hidden:
+    - 64
+    - 128
+    - 256
+    - 384
+    - 512
+  gnn_layers:
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+  gnn_dropout:
+    - 0.3
+    - 0.4
+    - 0.5
+    - 0.6
+    - 0.7
+    - 0.75
+  gnn_heads:
+    - 1
+    - 2
+    - 4
+    - 8
+  gnn_concat:
+    - true
+    - false
+
+  graph_construction:
+    graph_type:
+      - grid
+      - knn
+    k_neighbors:
+      - 4
+      - 8
+      - 12
+      - 16
+    connect_diagonals:
+      - true
+      - false
+
+  mil_pooling:
+    att_dim:
+      - 64
+      - 128
+      - 256
+      - 384
+      - 512
+    att_heads:
+      - 1
+      - 2
+      - 4
+      - 8
+    pool_dropout:
+      - 0.3
+      - 0.4
+      - 0.5
+      - 0.6
+      - 0.7
+      - 0.75
+    classifier_dim:
+      - 64
+      - 128
+      - 256
+      - 384
+      - 512
+    classifier_light:
+      - true
+      - false
+
+  architectural_flags:
+    use_residual:
+      - true
+      - false
+    use_layer_norm:
+      - true
+      - false
+
+  optimization:
+    optimizer:
+      - adam
+      - adamw
+    lr: "log-uniform in [1e-6, 1e-3]"
+    weight_decay: "log-uniform in [1e-8, 1e-3]"
+
+graph_mil_best_params:
+  use: true
+  gnn_type: gat
+  gnn_hidden: 384
+  gnn_layers: 3
+  gnn_dropout: 0.6
+  gnn_heads: 1
+  gnn_concat: true
+  graph_type: grid
+  k_neighbors: 4
+  connect_diagonals: false
+  att_dim: 128
+  att_heads: 4
+  pool_dropout: 0.5
+  classifier_dim: 64
+  classifier_light: true
+  use_residual: false
+  use_layer_norm: true
+  optimizer: adamw
+  lr: 1.5179778158176042e-05
+  weight_decay: 1.0991497964955842e-05
