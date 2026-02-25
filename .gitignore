@@ -12,3 +12,6 @@ config*.yml
 *.pkl
 *.csv
 /tune_mil_outputs/*
+/mil_results/*
+mil_results/*.csv
+mil_results/*.yml
