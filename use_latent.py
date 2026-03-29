@@ -6,6 +6,7 @@ import pandas as pd
 import uuid
 import torch
 import random
+import wandb
 import numpy as np
 import torch.nn as nn
 from datetime import datetime
@@ -14,7 +15,6 @@ from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from sklearn.metrics import balanced_accuracy_score
 from sklearn.metrics import roc_auc_score, accuracy_score
 from save_latent import extract_latents
-from fetch_experiments import fetch_experiment
 from sklearn.metrics import precision_recall_fscore_support
 from sklearn.model_selection import StratifiedKFold
 from utils import get_args_parser
@@ -22,40 +22,40 @@ from utils_g_mil import AttentionMIL, PatientDataset, GraphMIL, build_graph
 
 
 def _evaluate_model(state_dict):
-            if state_dict is not None:
-                model.load_state_dict(state_dict)
-            model.eval()
-            y_true = []
-            y_score = []
-            with torch.no_grad():
-                for x, y_batch in test_loader:
-                    x = x[0].to(device)
-                    y_long = y_batch.to(device).long()
-                    if mil_type == 'graph':
-                        adj_norm, adj_mask, edge_index, edge_weight = build_graph(
-                            x, graph_type=graph_type, k=k_neighbors,
-                            connect_diagonals=connect_diagonals, device=device)
-                        probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
-                                         edge_index=edge_index, edge_weight=edge_weight)
-                    else:
-                        probs, att = model(x)
-                    y_true.append(int(y_long.item()))
-                    y_score.append(probs.cpu().numpy())
+    if state_dict is not None:
+        model.load_state_dict(state_dict)
+    model.eval()
+    y_true = []
+    y_score = []
+    with torch.no_grad():
+        for x, y_batch in test_loader:
+            x = x[0].to(device)
+            y_long = y_batch.to(device).long()
+            if mil_type == 'graph':
+                adj_norm, adj_mask, edge_index, edge_weight = build_graph(
+                    x, graph_type=graph_type, k=k_neighbors,
+                    connect_diagonals=connect_diagonals, device=device)
+                probs, att = model(x, adj=adj_norm, adj_mask=adj_mask,
+                                    edge_index=edge_index, edge_weight=edge_weight)
+            else:
+                probs, att = model(x)
+            y_true.append(int(y_long.item()))
+            y_score.append(probs.cpu().numpy())
 
-            if len(y_true) == 0:
-                return {k: np.nan for k in ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']}
+    if len(y_true) == 0:
+        return {k: np.nan for k in ['micro','macro_p','macro_r','macro_f1','weighted_p','weighted_r','weighted_f1']}
 
-            y_true_arr = np.array(y_true)
-            y_score_arr = np.vstack(y_score)
-            y_pred_arr = np.argmax(y_score_arr, axis=1)
+    y_true_arr = np.array(y_true)
+    y_score_arr = np.vstack(y_score)
+    y_pred_arr = np.argmax(y_score_arr, axis=1)
 
-            micro_acc = accuracy_score(y_true_arr, y_pred_arr)
-            macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='macro', zero_division=0)
-            weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='weighted', zero_division=0)
+    micro_acc = accuracy_score(y_true_arr, y_pred_arr)
+    macro_p, macro_r, macro_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='macro', zero_division=0)
+    weighted_p, weighted_r, weighted_f1, _ = precision_recall_fscore_support(y_true_arr, y_pred_arr, average='weighted', zero_division=0)
 
-            return {'micro': micro_acc,
-                    'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
-                    'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1}
+    return {'micro': micro_acc,
+            'macro_p': macro_p, 'macro_r': macro_r, 'macro_f1': macro_f1,
+            'weighted_p': weighted_p, 'weighted_r': weighted_r, 'weighted_f1': weighted_f1}
 
 
 
@@ -66,16 +66,24 @@ with open(args.config_path) as file:
 
 device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
-# experiment_ids = list(range(798, 814)) + list(range(726, 732))
-experiment_ids = [726, 799, 802, 803, 804, 805]
+runs_df = pd.DataFrame([
+    {
+        'sys/id': 'MMODAL-804',
+        'best_model_path': 'e6b29aa3b47145ec935e675a13c4b71d.pth',
+    },
+    {
+        'sys/id': 'MMODAL-805',
+        'best_model_path': 'c72210e208974529927e6c53d8ec890c.pth',
+    }
+], columns=[
+    'sys/id',
+    'best_model_path',
+])
 
 
-runs_df = fetch_experiment(experiment_ids=experiment_ids)
-runs_df = runs_df[['sys/id',
-                   'config/training_plan/parameters/norm_pix_loss',
-                   'config/training_plan/parameters/include_lesion_mask',
-                   'best_model_path']].copy()
-runs_df['best_model_path'] = runs_df['best_model_path'].apply(lambda x: os.path.basename(x) if isinstance(x, str) else x)
+runs_df['best_model_path'] = runs_df['best_model_path'].apply(
+    lambda x: os.path.basename(x) if isinstance(x, str) else x
+)
 
 runs_df['micro_accuracy'] = 0.0
 runs_df['macro_precision'] = 0.0
@@ -87,14 +95,34 @@ runs_df['weighted_f1'] = 0.0
 
 results_rows = []
 
-SEED = config['seed']
 
+# experiment_ids = list(range(798, 814)) + list(range(726, 732))
+# experiment_ids = [726, 799, 802, 803, 804, 805]
+
+api = wandb.Api()
+all_runs = api.runs("rafalbuler-gda-tech/SKIN-LESION")
+experiment_ids = set(r.id for r in all_runs)
+print(f"Found {len(experiment_ids)} runs in Weights & Biases project rafalbuler-gda-tech/SKIN-LESION")
+print(f"Using experiment IDs: {experiment_ids}")
+wandb_run = wandb.init(
+    entity="rafalbuler-gda-tech",
+    project="SKIN-LESION",
+    config={
+        "script": "use_latent.py",
+        "seed": int(config.get('seed', 42)),
+        "device": str(device),
+        "num_manual_runs": int(len(runs_df)),
+    },
+)
+
+SEED = config['seed']
+# %%
 output_dir = os.path.join(os.getcwd(), "mil_results")
 os.makedirs(output_dir, exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 unique_id = uuid.uuid4().hex[:6]
-out_csv = os.path.join(output_dir, f"0runs_df_mil_results_{date_str}_{unique_id}.csv")
-config_out = os.path.join(output_dir, f"0config_{date_str}_{unique_id}.yml")
+out_csv = os.path.join(output_dir, f"4_isic19_runs_df_mil_results_{date_str}_{unique_id}.csv")
+config_out = os.path.join(output_dir, f"4_isic19_config_{date_str}_{unique_id}.yml")
 
 def _persist_results(df):
     df.to_csv(out_csv, index=False)
@@ -112,6 +140,7 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 for idx, row in runs_df.iterrows():
+    run_identifier = row.get('sys/id', f'manual_{idx}')
     model_name = row['best_model_path']
     if not isinstance(model_name, str) or model_name == 'nan':
         print(f"Skipping row {idx} because best_model_path is missing")
@@ -247,7 +276,7 @@ for idx, row in runs_df.iterrows():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         ## ------------------------------------------------ tune PARAMS ------------------------------------------------ ##
-        mil_type = 'graph'  # 'classic' or 'graph'
+        mil_type = 'classic'  # 'classic' or 'graph'
         
         input_dim = train_dataset[0][0].shape[1]
         if mil_type == 'classic':
@@ -463,7 +492,7 @@ for idx, row in runs_df.iterrows():
 
 
     row_bacc = {
-        'id': row['sys/id'],
+        'id': run_identifier,
         'checkpoint_type': 'best_bacc',
         'micro_accuracy': agg_mean_bacc['micro'],
         'macro_precision': agg_mean_bacc['macro_p'],
@@ -482,7 +511,7 @@ for idx, row in runs_df.iterrows():
     }
 
     row_loss = {
-        'id': row['sys/id'],
+        'id': run_identifier,
         'checkpoint_type': 'best_loss',
         'micro_accuracy': agg_mean_loss['micro'],
         'macro_precision': agg_mean_loss['macro_p'],
@@ -503,8 +532,20 @@ for idx, row in runs_df.iterrows():
     results_rows.append(row_bacc)
     results_rows.append(row_loss)
 
+    wandb.log({
+        'run_id': run_identifier,
+        'model_name': model_name,
+        'best_bacc/micro_accuracy': agg_mean_bacc['micro'],
+        'best_bacc/macro_f1': agg_mean_bacc['macro_f1'],
+        'best_bacc/weighted_f1': agg_mean_bacc['weighted_f1'],
+        'best_loss/micro_accuracy': agg_mean_loss['micro'],
+        'best_loss/macro_f1': agg_mean_loss['macro_f1'],
+        'best_loss/weighted_f1': agg_mean_loss['weighted_f1'],
+    })
+
     # Persist accumulated results after each model to avoid losing progress mid-run
     _persist_results(pd.DataFrame(results_rows))
 
 print(f"\nSaved runs results to {out_csv}")
+wandb.finish()
 # %%
