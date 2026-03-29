@@ -15,3 +15,4 @@ config*.yml
 /mil_results/*
 mil_results/*.csv
 mil_results/*.yml
+wandb/*
