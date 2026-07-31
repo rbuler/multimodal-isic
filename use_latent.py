@@ -68,12 +68,28 @@ device = torch.device(config['device'] if torch.cuda.is_available() else 'cpu')
 # %%
 runs_df = pd.DataFrame([
     {
+        'sys/id': 'MMODAL-805',
+        'best_model_path': 'c72210e208974529927e6c53d8ec890c.pth',
+    },
+    {
+        'sys/id': 'MMODAL-802',
+        'best_model_path': '6d4c4f1198f0439583ffd3af0a76ef9f.pth',
+    },
+    {
+        'sys/id': 'MMODAL-799',
+        'best_model_path': 'a9d7feb3402a4670bbcfa73f534acab7.pth',
+    },
+    {
         'sys/id': 'MMODAL-804',
         'best_model_path': 'e6b29aa3b47145ec935e675a13c4b71d.pth',
     },
     {
-        'sys/id': 'MMODAL-805',
-        'best_model_path': 'c72210e208974529927e6c53d8ec890c.pth',
+        'sys/id': 'MMODAL-726',
+        'best_model_path': 'ce4069521dfb4264a3ac8cc3d59971a2.pth',
+    },
+    {
+        'sys/id': 'MMODAL-806',
+        'best_model_path': '4175dac48c3b4e93b4c0c82e8d8b44ff.pth',
     }
 ], columns=[
     'sys/id',
@@ -116,13 +132,16 @@ wandb_run = wandb.init(
 )
 
 SEED = config['seed']
+mil_type = 'graph'  # 'classic' or 'graph'
+
+
 # %%
-output_dir = os.path.join(os.getcwd(), "mil_results")
+output_dir = os.path.join(os.getcwd(), "mil_results", "isic_2019")
 os.makedirs(output_dir, exist_ok=True)
 date_str = datetime.now().strftime("%Y%m%d_%H%M%S")
 unique_id = uuid.uuid4().hex[:6]
-out_csv = os.path.join(output_dir, f"4_isic19_runs_df_mil_results_{date_str}_{unique_id}.csv")
-config_out = os.path.join(output_dir, f"4_isic19_config_{date_str}_{unique_id}.yml")
+out_csv = os.path.join(output_dir, f"4_isic19_runs_df_mil_results_{date_str}_{unique_id}_{mil_type}.csv")
+config_out = os.path.join(output_dir, f"4_isic19_config_{date_str}_{unique_id}_{mil_type}.yml")
 
 def _persist_results(df):
     df.to_csv(out_csv, index=False)
@@ -276,24 +295,25 @@ for idx, row in runs_df.iterrows():
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         ## ------------------------------------------------ tune PARAMS ------------------------------------------------ ##
-        mil_type = 'classic'  # 'classic' or 'graph'
         
         input_dim = train_dataset[0][0].shape[1]
+        num_classes = len(set(train_patient_labels))
         if mil_type == 'classic':
             if config['best_params']['use'] is False:
-                model = AttentionMIL(input_dim=input_dim, hidden_dim=256, att_dim=128, dropout=0.5).to(device)
+                model = AttentionMIL(input_dim=input_dim, hidden_dim=256, att_dim=128, dropout=0.5, num_classes=num_classes).to(device)
                 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
             else:
                 best_params = config['best_params']
                 model = AttentionMIL(input_dim=input_dim,
                                      hidden_dim=best_params['hidden_dim'],
                                      att_dim=best_params['att_dim'],
-                                     dropout=best_params['dropout']).to(device)
+                                     dropout=best_params['dropout'],
+                                     num_classes=num_classes).to(device)
                 if best_params['optimizer'] == 'adam':
                     optimizer = torch.optim.Adam(model.parameters(),
                                                  lr=best_params['learning_rate'],
                                                  weight_decay=best_params['weight_decay'])
-                elif best_params['optimizer'] == 'adamW':
+                elif best_params['optimizer'].lower() == 'adamw':
                     optimizer = torch.optim.AdamW(model.parameters(),
                                                   lr=best_params['learning_rate'],
                                                   weight_decay=best_params['weight_decay'])
@@ -319,7 +339,7 @@ for idx, row in runs_df.iterrows():
                                  pool_dropout=best_params.get('pool_dropout', 0.3),
                                  classifier_dim=best_params.get('classifier_dim', 128),
                                  classifier_light=best_params.get('classifier_light', False),
-                                 num_classes=7,
+                                 num_classes=num_classes,
                                  use_residual=best_params.get('use_residual', True),
                                  use_layer_norm=best_params.get('use_layer_norm', True)).to(device)
                 
@@ -353,7 +373,7 @@ for idx, row in runs_df.iterrows():
                                  pool_dropout=0.0,
                                  classifier_dim=64,
                                  classifier_light=False,
-                                 num_classes=7,
+                                 num_classes=num_classes,
                                  use_residual=True,
                                  use_layer_norm=True).to(device)
                 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
