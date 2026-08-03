@@ -35,6 +35,75 @@ class AttentionMIL(nn.Module):
         probs = torch.softmax(logits, dim=0)
         return probs, a
 
+class AttentionMIL_teacher(nn.Module):
+    def __init__(
+        self,
+        input_dim=768,
+        hidden_dim=128,
+        att_dim=64,
+        dropout=0.5,
+        num_classes=7
+    ):
+        super().__init__()
+
+        self.feature_extractor = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+
+        self.attention = nn.Sequential(
+            nn.Linear(hidden_dim, att_dim),
+            nn.Tanh(),
+            nn.Linear(att_dim, 1)
+        )
+
+        self.patch_classifier = nn.Linear(
+            hidden_dim,
+            num_classes
+        )
+
+    def forward(self, x):
+
+        # x: [196,768]
+        h = self.feature_extractor(x)
+        # h: [196,hidden_dim]
+
+        attention_logits = self.attention(h)
+        a = torch.softmax(
+            attention_logits,
+            dim=0
+        )
+        # a: [196,1]
+
+        patch_logits = self.patch_classifier(h)
+        # [196,7]
+
+        # MIL aggregation in class space
+        bag_logits = torch.sum(
+            a * patch_logits,
+            dim=0
+        )
+        # [7]
+
+        bag_probs = torch.softmax(
+            bag_logits,
+            dim=0
+        )
+
+        patch_probs = torch.softmax(
+            patch_logits,
+            dim=1
+        )
+
+        return {
+            "bag_logits": bag_logits,
+            "bag_probs": bag_probs,
+            "attention": a.squeeze(-1),
+            "patch_logits": patch_logits,
+            "patch_probs": patch_probs
+        }
+
 class PatientDataset(Dataset):
     def __init__(self, patient_features, patient_labels):
         self.features = patient_features
