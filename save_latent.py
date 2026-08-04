@@ -57,7 +57,7 @@ def extract_latents(config, path, remove_background=False):
             for batch in loader:
                 images = batch['image'].to(device)
                 image_path, segmentation_path = batch['image_path'], batch['segmentation_path']
-                latent, _, ids_restore = ae_model(images, mask_ratio=0)
+                latent, _, ids_restore, ids_keep = ae_model(images, mask_ratio=0)
 
                 latent_pooled_max = torch.max(latent, dim=1).values
                 latent_pooled_mean = torch.mean(latent, dim=1)
@@ -68,7 +68,8 @@ def extract_latents(config, path, remove_background=False):
                     'target': batch['target'].numpy(),
                     'latent_pooled_max': list(latent_pooled_max.cpu().numpy()),
                     'latent_pooled_mean': list(latent_pooled_mean.cpu().numpy()),
-                    'ids_restore': list(ids_restore.cpu().numpy())
+                    'ids_restore': list(ids_restore.cpu().numpy()),
+                    'ids_keep': list(ids_keep.cpu().numpy())
                 })
                 pooled_list.append(pooled_df)
 
@@ -91,6 +92,7 @@ def extract_latents(config, path, remove_background=False):
                     'target': batch['target'].numpy(),
                     'latent': list(latent.cpu().numpy()),
                     'ids_restore': list(ids_restore.cpu().numpy()),
+                    'ids_keep': list(ids_keep.cpu().numpy()),
                     'lesion_mask_patches': list(mask_patches.cpu().numpy())
                 })
                 raw_list.append(raw_df)
@@ -107,18 +109,20 @@ def extract_latents(config, path, remove_background=False):
     def build_patch_level_df(latent_raw_df, remove=True):
         patch_level_latents = []
         count = 0
-        for idx, row in latent_raw_df.iterrows():
+        for _, row in latent_raw_df.iterrows():
             image_path = row['image_path']
             segmentation_path = row['segmentation_path']
             target = row['target']
+
             latent = row['latent']  # shape (num_patches, dim)
-            ids_restore = row['ids_restore']  # shape (num_patches,)
+            ids_keep = row['ids_keep']  # shape (num_patches,)
             mask_patches = row['lesion_mask_patches']  # shape (H/16, W/16) or flattened
 
             mask_flat = np.asarray(mask_patches).ravel()  # (num_patches,)
-            for patch_idx in range(len(latent)):
-                patch_latent = np.asarray(latent[patch_idx])  # (dim,)
-                patch_id = int(ids_restore[patch_idx])
+
+            for patch_latent, patch_id in zip(latent, ids_keep):
+                patch_latent = np.asarray(patch_latent)  # (dim,)
+                patch_id = int(patch_id)
 
                 # determine if this patch overlaps the lesion mask (safe check for out-of-bounds)
                 inside = False
