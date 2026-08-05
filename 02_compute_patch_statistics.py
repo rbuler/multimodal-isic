@@ -36,6 +36,7 @@ def compute_patch_statistics(patch_probs):
     }
 
 def process_teacher_file(input_path):
+    input_path = Path(input_path)
 
     with open(input_path, "rb") as f:
         df = pickle.load(f)
@@ -64,10 +65,11 @@ def process_teacher_file(input_path):
         })
 
     stats_df = pd.DataFrame(stats)
-    output_path = input_path.replace("teacher_outputs_f", "patch_stats_f")
+    output_path = Path(str(input_path).replace("teacher_outputs_f", "patch_stats_f"))
     with open(output_path, "wb") as f:
         pickle.dump(stats_df, f)
 
+    input_path.unlink()
     print(f"Saved: {output_path}")
 
 
