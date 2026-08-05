@@ -65,7 +65,12 @@ def process_teacher_file(input_path):
         })
 
     stats_df = pd.DataFrame(stats)
-    output_path = Path(str(input_path).replace("teacher_outputs_f", "patch_stats_f"))
+    patch_stats_root = Path('/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/patch_stats')
+    teacher_outputs_root = Path('/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/teacher_outputs')
+    relative_path = input_path.relative_to(teacher_outputs_root)
+    output_path = patch_stats_root / relative_path
+    output_path = Path(str(output_path).replace("teacher_outputs_f", "patch_stats_f"))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as f:
         pickle.dump(stats_df, f)
 
