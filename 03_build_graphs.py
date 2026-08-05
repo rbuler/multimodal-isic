@@ -9,6 +9,8 @@ import torch
 
 NUM_NODES = 196
 GRID_SIDE = 14
+DEFAULT_K_VALUES = tuple(range(1, 8))
+DEFAULT_R_VALUES = tuple(range(1, 8))
 
 
 def _grid_edge_index(connect_diagonals=False):
@@ -128,6 +130,79 @@ def _as_list(value):
     return [value]
 
 
+def _parse_patch_stats_filename(path):
+    stem = Path(path).stem
+    parts = stem.split("_")
+    if len(parts) < 5 or parts[0] != "patch" or parts[1] != "stats" or parts[2] != "fold":
+        raise ValueError(f"Unexpected patch-stats filename: {path}")
+    return int(parts[3]), parts[4]
+
+
+def _build_image_graph_blueprints(row, k_values, r_values, seed):
+    patch_embeddings = torch.as_tensor(row["patch_embeddings"], dtype=torch.float32)
+    blueprints = {
+        "grid4_edge_index": _grid_edge_index(connect_diagonals=False).cpu().numpy(),
+        "grid8_edge_index": _grid_edge_index(connect_diagonals=True).cpu().numpy(),
+        "knn_edge_indices": {},
+        "random_edge_indices": {},
+    }
+
+    for k in k_values:
+        blueprints["knn_edge_indices"][int(k)] = _knn_edge_index(patch_embeddings, k=int(k)).cpu().numpy()
+
+    for r in r_values:
+        blueprints["random_edge_indices"][int(r)] = _random_edge_index(
+            NUM_NODES,
+            r=int(r),
+            seed=seed,
+        ).cpu().numpy()
+
+    return blueprints
+
+
+def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r_values=DEFAULT_R_VALUES, seed=42):
+    model_dir = Path(model_dir)
+    output_root = Path(output_root)
+    model_name = model_dir.name
+    output_dir = output_root / model_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    k_values = _as_list(k_values)
+    r_values = _as_list(r_values)
+
+    records = []
+    for input_path in sorted(model_dir.glob("patch_stats_fold_*_*.pkl")):
+        fold, split = _parse_patch_stats_filename(input_path)
+        with open(input_path, "rb") as f:
+            teacher_df = pickle.load(f)
+
+        if not isinstance(teacher_df, pd.DataFrame):
+            teacher_df = pd.DataFrame(teacher_df)
+
+        for row_idx, row in teacher_df.iterrows():
+            graph_seed = seed + fold * 10_000 + row_idx
+            records.append({
+                "model_name": model_name,
+                "fold": fold,
+                "split": split,
+                "image_id": row["image_id"],
+                "label": row["label"],
+                "patch_embeddings": row["patch_embeddings"],
+                "patch_probs": row["patch_probs"],
+                "attention": row["attention"],
+                "entropy": row["entropy"],
+                "confidence": row["confidence"],
+                "dominant_class": row["dominant_class"],
+                **_build_image_graph_blueprints(row, k_values=k_values, r_values=r_values, seed=graph_seed),
+            })
+
+    graph_df = pd.DataFrame(records)
+    out_path = output_dir / "graph_dataset.pkl"
+    with open(out_path, "wb") as f:
+        pickle.dump(graph_df, f)
+    print(f"Saved: {out_path}")
+
+
 def process_teacher_pickle(input_path, output_root, k_values=8, r_values=4, connect_diagonals=False, seed=42):
     with open(input_path, "rb") as f:
         teacher_df = pickle.load(f)
@@ -194,22 +269,19 @@ def process_teacher_pickle(input_path, output_root, k_values=8, r_values=4, conn
 
 # def main():
 
-teacher_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/teacher_outputs")
-output_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/graph_outputs")
+patch_stats_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/patch_stats")
+graph_outputs_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/graph_outputs")
 
-k = [1, 2, 3, 4, 5, 6, 7, 8]
-r = [1, 2, 3, 4, 5, 6, 7, 8]
+k = DEFAULT_K_VALUES
+r = DEFAULT_R_VALUES
 seed = 42
 
-for input_path in sorted(teacher_root.rglob("*.pkl")):
-    if input_path.name.startswith("teacher_outputs_"):
-        continue
-    process_teacher_pickle(
-        input_path=input_path,
-        output_root=output_root,
+for model_dir in sorted([p for p in patch_stats_root.iterdir() if p.is_dir()]):
+    process_model_directory(
+        model_dir=model_dir,
+        output_root=graph_outputs_root,
         k_values=k,
         r_values=r,
-        connect_diagonals=False,
         seed=seed,
     )
 
