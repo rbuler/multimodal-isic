@@ -176,7 +176,6 @@ def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r
 
         if not isinstance(teacher_df, pd.DataFrame):
             teacher_df = pd.DataFrame(teacher_df)
-        print(f"Processing: {input_path} (fold={fold}, split={split}, num_samples={len(teacher_df)})")
         for row_idx, row in teacher_df.iterrows():
             graph_seed = seed + fold * 10_000 + row_idx
             records.append({
@@ -184,13 +183,13 @@ def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r
                 "fold": fold,
                 "split": split,
                 "image_id": row["image_id"],
-                "label": row["label"],
-                "patch_embeddings": row["patch_embeddings"],
-                "patch_probs": row["patch_probs"],
-                "attention": row["attention"],
-                "entropy": row["entropy"],
-                "confidence": row["confidence"],
-                "dominant_class": row["dominant_class"],
+                # "label": row["label"],
+                # "patch_embeddings": row["patch_embeddings"],
+                # "patch_probs": row["patch_probs"],
+                # "attention": row["attention"],
+                # "entropy": row["entropy"],
+                # "confidence": row["confidence"],
+                # "dominant_class": row["dominant_class"],
                 **_build_image_graph_blueprints(row, k_values=k_values, r_values=r_values, seed=graph_seed),
             })
 
@@ -201,68 +200,6 @@ def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r
     print(f"Saved: {out_path}")
 
 
-def process_teacher_pickle(input_path, output_root, k_values=8, r_values=4, connect_diagonals=False, seed=42):
-    with open(input_path, "rb") as f:
-        teacher_df = pickle.load(f)
-
-    if not isinstance(teacher_df, pd.DataFrame):
-        teacher_df = pd.DataFrame(teacher_df)
-
-    input_path = Path(input_path)
-    output_root = Path(output_root)
-    relative_parent = input_path.parent.relative_to(input_path.parents[1]) if len(input_path.parents) > 1 else Path("")
-    output_dir = output_root / relative_parent
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    outputs = {
-        "grid4": [],
-        "grid8": [],
-    }
-
-    k_values = _as_list(k_values)
-    r_values = _as_list(r_values)
-
-    for k in k_values:
-        outputs[f"knn{k}"] = []
-    for r in r_values:
-        outputs[f"random{r}"] = []
-
-    for row_idx, row in teacher_df.iterrows():
-        base_record = {
-            "image_id": row["image_id"],
-            "label": row["label"],
-            "patch_embeddings": row["patch_embeddings"],
-            "patch_probs": row["patch_probs"],
-            "attention": row["attention"],
-            "entropy": row["entropy"],
-            "confidence": row["confidence"],
-            "dominant_class": row["dominant_class"],
-        }
-
-        outputs["grid4"].append({
-            **base_record,
-            **build_graph_blueprints(row, "grid", connect_diagonals=False),
-        })
-        outputs["grid8"].append({
-            **base_record,
-            **build_graph_blueprints(row, "grid", connect_diagonals=True),
-        })
-        for k in k_values:
-            outputs[f"knn{k}"].append({
-                **base_record,
-                **build_graph_blueprints(row, "knn", k=k),
-            })
-        for r in r_values:
-            outputs[f"random{r}"].append({
-                **base_record,
-                **build_graph_blueprints(row, "random", r=r, seed=seed + row_idx),
-            })
-
-    for graph_name, records in outputs.items():
-        out_path = output_dir / f"{input_path.stem}_{graph_name}.pkl"
-        with open(out_path, "wb") as f:
-            pickle.dump(pd.DataFrame(records), f)
-        print(f"Saved: {out_path}")
 
 
 # def main():
