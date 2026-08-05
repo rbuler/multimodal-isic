@@ -1,11 +1,9 @@
-import os
+import torch
 import pickle
+import pandas as pd
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
-import torch
-
+# %%
 
 NUM_NODES = 196
 GRID_SIDE = 14
@@ -178,7 +176,7 @@ def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r
 
         if not isinstance(teacher_df, pd.DataFrame):
             teacher_df = pd.DataFrame(teacher_df)
-
+        print(f"Processing: {input_path} (fold={fold}, split={split}, num_samples={len(teacher_df)})")
         for row_idx, row in teacher_df.iterrows():
             graph_seed = seed + fold * 10_000 + row_idx
             records.append({
@@ -284,7 +282,7 @@ for model_dir in sorted([p for p in patch_stats_root.iterdir() if p.is_dir()]):
         r_values=r,
         seed=seed,
     )
-
+# %%
 
 # if __name__ == "__main__":
 #     main()
