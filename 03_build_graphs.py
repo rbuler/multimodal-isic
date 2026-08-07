@@ -212,6 +212,10 @@ r = DEFAULT_R_VALUES
 seed = 42
 
 for model_dir in sorted([p for p in patch_stats_root.iterdir() if p.is_dir()]):
+
+    # TODO : Remove this filter once some of the models are processed. This is just to avoid processing all models at once.
+    if model_dir.name not in ['4175dac48c3b4e93b4c0c82e8d8b44ff', '6d4c4f1198f0439583ffd3af0a76ef9f']:
+        continue
     process_model_directory(
         model_dir=model_dir,
         output_root=graph_outputs_root,
