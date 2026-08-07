@@ -7,6 +7,8 @@ from pathlib import Path
 EPS = 1e-8
 MEASURES = ["H_f", "H_e", "H_ent", "H_cls", "H_conf", "H_att"]
 GRAPH_VARIANT_RE = re.compile(r"^(?P<kind>grid4|grid8|knn|random)(?P<param>\d+)?$")
+PATCH_STATS_RE = re.compile(r"^patch_stats_fold_(?P<fold>\d+)_(?P<split>train|val|test)\.pkl$")
+PATCH_STATS_ROOT = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/patch_stats")
 
 
 def _load_graph_dataframe(path):
@@ -15,6 +17,52 @@ def _load_graph_dataframe(path):
     if not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(df)
     return df
+
+
+def _load_patch_stats_dataframe(model_name):
+    model_dir = PATCH_STATS_ROOT / model_name
+    if not model_dir.exists():
+        raise FileNotFoundError(f"Missing patch_stats model directory: {model_dir}")
+
+    frames = []
+    for path in sorted(model_dir.glob("patch_stats_fold_*_*.pkl")):
+        match = PATCH_STATS_RE.match(path.name)
+        if not match:
+            continue
+        frame = _load_graph_dataframe(path)
+        frame = frame.copy()
+        frame["fold"] = int(match.group("fold"))
+        frame["split"] = match.group("split")
+        frames.append(frame)
+
+    if not frames:
+        raise FileNotFoundError(f"No patch_stats pickle files found under {model_dir}")
+
+    return pd.concat(frames, ignore_index=True)
+
+
+def _merge_graph_and_patch_stats(graph_df, patch_df):
+    join_cols = ["fold", "split", "image_id"]
+    missing_cols = [col for col in join_cols if col not in graph_df.columns or col not in patch_df.columns]
+    if missing_cols:
+        raise KeyError(f"Missing join columns for graph/patch merge: {missing_cols}")
+
+    merged = graph_df.merge(patch_df, on=join_cols, how="inner", suffixes=("", "_patch"))
+
+    patch_cols = [
+        "patch_embeddings",
+        "patch_probs",
+        "attention",
+        "entropy",
+        "confidence",
+        "dominant_class",
+    ]
+    for col in patch_cols:
+        patch_col = f"{col}_patch"
+        if patch_col in merged.columns:
+            merged[col] = merged[patch_col]
+
+    return merged
 
 
 def _edge_index_from_variant(row, graph_variant):
@@ -99,6 +147,8 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
         if verbose:
             print(f"Processing {f.name} ...")
         graph_df = _load_graph_dataframe(f)
+        patch_df = _load_patch_stats_dataframe(f.parent.name)
+        graph_df = _merge_graph_and_patch_stats(graph_df, patch_df)
 
         for _, row in graph_df.iterrows():
             meta_base = {
