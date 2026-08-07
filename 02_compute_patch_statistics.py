@@ -30,9 +30,9 @@ def compute_patch_statistics(patch_probs):
     )
 
     return {
-        "entropy": entropy,                  # (196,)
+        "entropy": entropy,                    # (196,)
         "confidence": confidence,              # (196,)
-        "dominant_class": dominant_class      # (196,)
+        "dominant_class": dominant_class       # (196,)
     }
 
 def process_teacher_file(input_path):
