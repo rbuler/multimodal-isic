@@ -6,46 +6,7 @@ from pathlib import Path
 # %%
 EPS = 1e-8
 MEASURES = ["H_f", "H_e", "H_ent", "H_cls", "H_conf", "H_att"]
-MEASURE_LABELS = {
-    "H_f": "Feature (embedding cosine)",
-    "H_e": "Evidence (prob cosine)",
-    "H_ent": "Entropy disagreement",
-    "H_cls": "Dominant-class mismatch",
-    "H_conf": "Confidence disagreement",
-    "H_att": "Attention disagreement",
-}
-
-FNAME_RE = re.compile(
-    r"patch_stats_fold_(?P<fold>\d+)_(?P<split>train|val|test)_(?P<gtype>grid4|grid8|knn\d+|random\d+)\.pkl$"
-)
-
 GRAPH_VARIANT_RE = re.compile(r"^(?P<kind>grid4|grid8|knn|random)(?P<param>\d+)?$")
-
-
-def parse_filename(path):
-    m = FNAME_RE.search(Path(path).name)
-    if not m:
-        raise ValueError(
-            f"Filename doesn't match expected pattern "
-            f"'patch_stats_fold_<N>_<split>_<gtype>.pkl': {path}"
-        )
-    gtype = m.group("gtype")
-    if gtype.startswith("knn"):
-        graph_type = "knn"
-        graph_param = int(gtype[3:])
-    elif gtype.startswith("random"):
-        graph_type = "random"
-        graph_param = int(gtype[6:])
-    else:
-        graph_type = gtype
-        graph_param = None
-    return {
-        "fold": int(m.group("fold")),
-        "split": m.group("split"),
-        "graph_type": graph_type,
-        "graph_param": graph_param,
-        "graph_variant": gtype,
-    }
 
 
 def _load_graph_dataframe(path):
@@ -124,43 +85,6 @@ def _summarize_image(em, meta):
 
 
 # --------------------------------------------------------------------------
-# Per-file processing
-# --------------------------------------------------------------------------
-
-def process_file(path, pool_edges=False, max_pool_per_file=200_000, rng=42, graph_variant=None):
-    meta_file = parse_filename(path)
-    df = _load_graph_dataframe(path)
-
-    rng = rng or np.random.default_rng(0)
-    summary_rows = []
-    pooled_chunks = {m: [] for m in MEASURES} if pool_edges else None
-
-    for _, row in df.iterrows():
-        em = compute_edge_heterophily(row, graph_variant=graph_variant or meta_file["graph_variant"])
-        meta = {**meta_file, "image_id": row["image_id"]}
-        if "label" in row:
-            meta["label"] = row["label"]
-        summary_rows.append(_summarize_image(em, meta))
-        if pool_edges:
-            for m in MEASURES:
-                pooled_chunks[m].append(em[m])
-
-    summary_df = pd.DataFrame(summary_rows)
-
-    pooled_arrays = None
-    if pool_edges:
-        pooled_arrays = {}
-        for m in MEASURES:
-            arr = np.concatenate(pooled_chunks[m]) if pooled_chunks[m] else np.array([])
-            if len(arr) > max_pool_per_file:
-                idx = rng.choice(len(arr), size=max_pool_per_file, replace=False)
-                arr = arr[idx]
-            pooled_arrays[m] = arr
-
-    return summary_df, pooled_arrays
-
-
-# --------------------------------------------------------------------------
 # Corpus-level orchestration
 # --------------------------------------------------------------------------
 
@@ -203,53 +127,20 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
 
     return pd.concat(all_summaries, ignore_index=True)
 
-
-def collect_pooled_edges(root_dir, model_name, fold, split,
-                          graph_types=("grid4", "grid8", "knn1", "random1"),
-                          max_pool_per_file=200_000, seed=0):
-
-    root_dir = Path(root_dir)
-    rng = np.random.default_rng(seed)
-    pooled_by_gtype = {}
-    graph_path = root_dir / model_name / "graph_dataset.pkl"
-    if not graph_path.exists():
-        raise FileNotFoundError(f"Missing graph dataset: {graph_path}")
-
-    graph_df = _load_graph_dataframe(graph_path)
-    graph_df = graph_df[(graph_df["fold"] == fold) & (graph_df["split"] == split)]
-
-    for gtype in graph_types:
-        pooled_chunks = {m: [] for m in MEASURES}
-        for _, row in graph_df.iterrows():
-            if not row["graph_variant"] == gtype:
-                continue
-            em = compute_edge_heterophily(row, graph_variant=gtype)
-            for m in MEASURES:
-                pooled_chunks[m].append(em[m])
-        pooled = {}
-        for m in MEASURES:
-            arr = np.concatenate(pooled_chunks[m]) if pooled_chunks[m] else np.array([])
-            if len(arr) > max_pool_per_file:
-                idx = rng.choice(len(arr), size=max_pool_per_file, replace=False)
-                arr = arr[idx]
-            pooled[m] = arr
-        pooled_by_gtype[gtype] = pooled
-    return pooled_by_gtype
-
-
-def leaderboard(master_df, group_cols=("split", "graph_type")):
-    """Mean heterophily per group (e.g. per split x graph_type), for every
-    measure. Answers 'which graph construction induces the strongest
-    evidence heterophily, and does that hold across splits?'"""
-    cols = [f"{m}_mean" for m in MEASURES]
-    return master_df.groupby(list(group_cols))[cols].mean().round(5)
-
-
 # --------------------------------------------------------------------------
 # Plots
 # --------------------------------------------------------------------------
 
 def aggregate_results(df):
+    """Aggregate per-image heterophily scores across folds.
+
+    The input dataframe is expected to contain at least:
+        fold, split, graph_variant,
+        H_f_mean, H_e_mean, H_ent_mean, H_cls_mean, H_conf_mean, H_att_mean
+
+    We first average within each fold, then compute mean/std across the five folds
+    for each split, graph_variant, and metric.
+    """
     metric_cols = [
         "H_f_mean",
         "H_e_mean",
@@ -259,7 +150,12 @@ def aggregate_results(df):
         "H_att_mean",
     ]
 
-    long_df = df.melt(
+    fold_level = (
+        df.groupby(["fold", "split", "graph_variant"], as_index=False)[metric_cols]
+        .mean()
+    )
+
+    long_df = fold_level.melt(
         id_vars=["fold", "split", "graph_variant"],
         value_vars=metric_cols,
         var_name="metric",
@@ -280,34 +176,21 @@ def aggregate_results(df):
     return summary_df
 
 
-def plot_split(summary_df, split, output_dir):
+def plot_split(df_summary, split, output_dir):
+    """Plot the fold-aggregated heterophily curves for one split.
+
+    Parameters
+    ----------
+    df_summary : pandas.DataFrame
+        Output of aggregate_results().
+    split : str
+        One of {'train', 'val', 'test'}.
+    output_dir : str or pathlib.Path
+        Directory where the PNG and PDF should be saved.
+    """
     import matplotlib.pyplot as plt
     from pathlib import Path
 
-    metric_order = [
-        "H_f_mean",
-        "H_e_mean",
-        "H_ent_mean",
-        "H_cls_mean",
-        "H_conf_mean",
-        "H_att_mean",
-    ]
-    metric_titles = {
-        "H_f_mean": "Feature heterophily",
-        "H_e_mean": "Evidence heterophily",
-        "H_ent_mean": "Entropy heterophily",
-        "H_cls_mean": "Class heterophily",
-        "H_conf_mean": "Confidence heterophily",
-        "H_att_mean": "Attention heterophily",
-    }
-    metric_colors = {
-        "H_f_mean": "blue",
-        "H_e_mean": "orange",
-        "H_ent_mean": "green",
-        "H_cls_mean": "red",
-        "H_conf_mean": "purple",
-        "H_att_mean": "brown",
-    }
     graph_order = [
         "grid4",
         "grid8",
@@ -328,17 +211,41 @@ def plot_split(summary_df, split, output_dir):
         "random7",
         "random8",
     ]
-    x_pos = np.arange(len(graph_order))
+    metric_order = [
+        "H_f_mean",
+        "H_e_mean",
+        "H_ent_mean",
+        "H_cls_mean",
+        "H_conf_mean",
+        "H_att_mean",
+    ]
+    metric_titles = {
+        "H_f_mean": "Feature heterophily (H_f)",
+        "H_e_mean": "Evidence heterophily (H_e)",
+        "H_ent_mean": "Entropy heterophily (H_ent)",
+        "H_cls_mean": "Dominant-class heterophily (H_cls)",
+        "H_conf_mean": "Confidence heterophily (H_conf)",
+        "H_att_mean": "Attention heterophily (H_att)",
+    }
+    metric_colors = {
+        "H_f_mean": "blue",
+        "H_e_mean": "orange",
+        "H_ent_mean": "green",
+        "H_cls_mean": "red",
+        "H_conf_mean": "purple",
+        "H_att_mean": "brown",
+    }
 
-    split_df = summary_df[summary_df["split"] == split].copy()
+    split_df = df_summary[df_summary["split"] == split].copy()
     if split_df.empty:
-        raise ValueError(f"No rows found for split={split!r}")
+        raise ValueError(f"No rows available for split={split!r}")
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(3, 2, figsize=(15, 12), sharex=True)
+    fig, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
     axes = axes.flatten()
+    x_positions = np.arange(len(graph_order))
 
     for ax, metric in zip(axes, metric_order):
         metric_df = split_df[split_df["metric"] == metric].copy()
@@ -348,7 +255,7 @@ def plot_split(summary_df, split, output_dir):
         yerr = metric_df["std"].to_numpy(dtype=float)
 
         ax.errorbar(
-            x_pos,
+            x_positions,
             y,
             yerr=yerr,
             color=metric_colors[metric],
@@ -360,54 +267,69 @@ def plot_split(summary_df, split, output_dir):
         )
         ax.set_title(metric_titles[metric], fontsize=13)
         ax.set_ylabel("Mean heterophily", fontsize=12)
-        ax.grid(True, linestyle="--", alpha=0.35)
-        ax.axvline(1.5, linestyle="--", color="gray", linewidth=1, alpha=0.6)
-        ax.axvline(9.5, linestyle="--", color="gray", linewidth=1, alpha=0.6)
+        ax.set_xticks(x_positions)
+        ax.set_xticklabels(graph_order, rotation=45, ha="right", fontsize=10)
+        ax.grid(True, linestyle="--", alpha=0.3)
+        ax.axvline(1.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
+        ax.axvline(9.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
         ax.set_xlim(-0.5, len(graph_order) - 0.5)
 
-        ax.set_xticks(x_pos)
-        ax.set_xticklabels(graph_order, rotation=45, ha="right", fontsize=10)
-
-    family_centers = {
-        "Grid": 0.5,
-        "kNN": 5.5,
-        "Random": 13.5,
-    }
-    for label, xpos in family_centers.items():
-        axes[-1].text(
-            xpos,
-            -0.38,
-            label,
-            transform=axes[-1].get_xaxis_transform(),
-            ha="center",
-            va="top",
-            fontsize=12,
-        )
+    # Family labels under the x-axis.
+    axes[-1].text(
+        0.5,
+        -0.38,
+        "Grid",
+        transform=axes[-1].get_xaxis_transform(),
+        ha="center",
+        va="top",
+        fontsize=12,
+    )
+    axes[-1].text(
+        5.5,
+        -0.38,
+        "kNN",
+        transform=axes[-1].get_xaxis_transform(),
+        ha="center",
+        va="top",
+        fontsize=12,
+    )
+    axes[-1].text(
+        13.5,
+        -0.38,
+        "Random",
+        transform=axes[-1].get_xaxis_transform(),
+        ha="center",
+        va="top",
+        fontsize=12,
+    )
 
     fig.tight_layout()
 
     png_path = output_dir / f"heterophily_{split}.png"
     pdf_path = output_dir / f"heterophily_{split}.pdf"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf_path, bbox_inches="tight")
+    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
-
-
-# MEASURES = ["H_f", "H_e", "H_ent", "H_cls", "H_conf", "H_att"]
-ROOT = "graph_outputs/c72210e208974529927e6c53d8ec890c"
-
-master_df = build_master_summary(ROOT)
-master_df.to_csv("heterophily_master_summary.csv", index=False)
-print(leaderboard(master_df, group_cols=("split", "graph_variant")))                 # mean per (split, graph_type)
-
-summary_df = aggregate_results(master_df)
-
-for split in ["train", "val", "test"]:
-    plot_split(summary_df, split, output_dir="figures/heterophily")
-
-
-
 # %%
-# TODO
-# sprawdzic kolejnosc patch embeddings i potrzebe sortowania!!!!!!!!!!! wazne!
+# def main():
+graph_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/graph_outputs")
+figures_root = Path("figures/heterophily")
+
+model_dirs = sorted([p for p in graph_root.iterdir() if p.is_dir()])
+if not model_dirs:
+    raise FileNotFoundError(f"No model directories found under {graph_root}")
+
+model_dirs = model_dirs[:1]  # For testing, only process the first model directory
+for model_dir in model_dirs:
+    results_df = build_master_summary(model_dir)
+    summary_df = aggregate_results(results_df)
+
+    model_fig_dir = figures_root / model_dir.name
+    for split in ["train", "val", "test"]:
+        plot_split(summary_df, split, output_dir=model_fig_dir)
+
+
+# if __name__ == "__main__":
+#     main()
+# %%
