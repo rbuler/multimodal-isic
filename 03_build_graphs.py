@@ -7,8 +7,9 @@ from pathlib import Path
 
 NUM_NODES = 196
 GRID_SIDE = 14
-DEFAULT_K_VALUES = tuple(range(1, 8))
-DEFAULT_R_VALUES = tuple(range(1, 8))
+# add 12 and 16 to k and r values, but 1-8 and  then 12 and 16 nothing between
+DEFAULT_K_VALUES = tuple(range(1, 9)) + (12, 16)
+DEFAULT_R_VALUES = tuple(range(1, 9)) + (12, 16)
 
 
 def _grid_edge_index(connect_diagonals=False):
@@ -183,13 +184,6 @@ def process_model_directory(model_dir, output_root, k_values=DEFAULT_K_VALUES, r
                 "fold": fold,
                 "split": split,
                 "image_id": row["image_id"],
-                # "label": row["label"],
-                # "patch_embeddings": row["patch_embeddings"],
-                # "patch_probs": row["patch_probs"],
-                # "attention": row["attention"],
-                # "entropy": row["entropy"],
-                # "confidence": row["confidence"],
-                # "dominant_class": row["dominant_class"],
                 **_build_image_graph_blueprints(row, k_values=k_values, r_values=r_values, seed=graph_seed),
             })
 
