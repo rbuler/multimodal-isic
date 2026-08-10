@@ -3,9 +3,22 @@ import pickle
 import numpy as np
 import pandas as pd
 from pathlib import Path
+import matplotlib.pyplot as plt
+
 # %%
 EPS = 1e-8
-MEASURES = ["H_f", "H_e", "H_ent", "H_cls", "H_conf", "H_att"]
+DEFAULT_K_VALUES = tuple(range(1, 9)) + (12, 16)
+DEFAULT_R_VALUES = tuple(range(1, 9)) + (12, 16)
+MEASURES = [
+    "H_f",
+    "H_e",
+    "H_cls",
+    "H_kl",
+    "H_dirichlet",
+    "H_spatial",
+    "H_node",
+    "H_adj",
+]
 GRAPH_VARIANT_RE = re.compile(r"^(?P<kind>grid4|grid8|knn|random)(?P<param>\d+)?$")
 PATCH_STATS_RE = re.compile(r"^patch_stats_fold_(?P<fold>\d+)_(?P<split>train|val|test)\.pkl$")
 PATCH_STATS_ROOT = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/patch_stats")
@@ -52,9 +65,6 @@ def _merge_graph_and_patch_stats(graph_df, patch_df):
     patch_cols = [
         "patch_embeddings",
         "patch_probs",
-        "attention",
-        "entropy",
-        "confidence",
         "dominant_class",
     ]
     for col in patch_cols:
@@ -95,29 +105,67 @@ def _row_cosine_sim(a, b):
 
 
 def compute_edge_heterophily(row, graph_variant=None):
-    """All six edge-wise measures for one image (one DataFrame row)."""
+    """Compute scalar edge heterophily measures and a class compatibility matrix for one image."""
     if graph_variant is None:
         edge_index = np.asarray(row["edge_index"])
     else:
         edge_index = _edge_index_from_variant(row, graph_variant)
+
     src, dst = edge_index[0], edge_index[1]
     keep = src != dst  # defensive: strip any self-loops before averaging
     src, dst = src[keep], dst[keep]
 
     embeddings = np.asarray(row["patch_embeddings"], dtype=np.float32)
     patch_probs = np.asarray(row["patch_probs"], dtype=np.float32)
-    entropy = np.asarray(row["entropy"], dtype=np.float32)
-    confidence = np.asarray(row["confidence"], dtype=np.float32)
     dominant_class = np.asarray(row["dominant_class"])
-    attention = np.asarray(row["attention"], dtype=np.float32)
+
+    x_src, y_src = src % 14, src // 14
+    x_dst, y_dst = dst % 14, dst // 14
+    num_nodes = embeddings.shape[0]
+    num_classes = patch_probs.shape[1]
+    same_class_edge = dominant_class[src] == dominant_class[dst]
+
+    matching_neighbors = np.bincount(src[same_class_edge], minlength=num_nodes)
+    node_degree = np.bincount(src, minlength=num_nodes)
+    valid_nodes = node_degree > 0
+    if np.any(valid_nodes):
+        h_node = float(np.mean(matching_neighbors[valid_nodes] / node_degree[valid_nodes]))
+    else:
+        h_node = 0.0
+
+    edge_homophily = float(np.mean(same_class_edge)) if len(same_class_edge) > 0 else 0.0
+    node_class_counts = np.bincount(dominant_class, minlength=num_classes)
+    p_k = node_class_counts / max(1, num_nodes)
+    expected_homophily = float(np.sum(p_k ** 2))
+
+    if expected_homophily < 1.0:
+        h_adj = (edge_homophily - expected_homophily) / (1.0 - expected_homophily)
+    else:
+        h_adj = 1.0
+
+    compat_matrix, _, _ = np.histogram2d(
+        dominant_class[src],
+        dominant_class[dst],
+        bins=[np.arange(num_classes + 1), np.arange(num_classes + 1)],
+    )
+    row_sums = compat_matrix.sum(axis=1, keepdims=True)
+    compat_matrix = np.divide(
+        compat_matrix,
+        row_sums,
+        out=np.zeros_like(compat_matrix),
+        where=row_sums != 0,
+    )
 
     return {
         "H_f": 1.0 - _row_cosine_sim(embeddings[src], embeddings[dst]),
         "H_e": 1.0 - _row_cosine_sim(patch_probs[src], patch_probs[dst]),
-        "H_ent": np.abs(entropy[src] - entropy[dst]),
         "H_cls": (dominant_class[src] != dominant_class[dst]).astype(np.float32),
-        "H_conf": np.abs(confidence[src] - confidence[dst]),
-        "H_att": np.abs(attention[src] - attention[dst]),
+        "H_kl": np.sum(patch_probs[src] * np.log((patch_probs[src] + EPS) / (patch_probs[dst] + EPS)), axis=1),
+        "H_dirichlet": 0.5 * np.sum((embeddings[src] - embeddings[dst]) ** 2, axis=1),
+        "H_spatial": np.sqrt((x_src - x_dst) ** 2 + (y_src - y_dst) ** 2),
+        "H_node": h_node,
+        "H_adj": h_adj,
+        "H_compat_matrix": compat_matrix,
     }
 
 
@@ -129,11 +177,12 @@ def _summarize_image(em, meta):
         out[f"{m}_mean"] = float(np.mean(vals))
         out[f"{m}_std"] = float(np.std(vals))
         out[f"{m}_median"] = float(np.median(vals))
+    out["H_compat_matrix"] = em["H_compat_matrix"]
     return out
 
 
 # --------------------------------------------------------------------------
-# Corpus-level orchestration
+# Build master summary of H across all Images, Folds, and Graph Variants
 # --------------------------------------------------------------------------
 
 def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
@@ -146,6 +195,8 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
     for f in files:
         if verbose:
             print(f"Processing {f.name} ...")
+            print("Loading:", f)
+            print("Size:", f.stat().st_size)
         graph_df = _load_graph_dataframe(f)
         patch_df = _load_patch_stats_dataframe(f.parent.name)
         graph_df = _merge_graph_and_patch_stats(graph_df, patch_df)
@@ -182,23 +233,8 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
 # --------------------------------------------------------------------------
 
 def aggregate_results(df):
-    """Aggregate per-image heterophily scores across folds.
-
-    The input dataframe is expected to contain at least:
-        fold, split, graph_variant,
-        H_f_mean, H_e_mean, H_ent_mean, H_cls_mean, H_conf_mean, H_att_mean
-
-    We first average within each fold, then compute mean/std across the five folds
-    for each split, graph_variant, and metric.
-    """
-    metric_cols = [
-        "H_f_mean",
-        "H_e_mean",
-        "H_ent_mean",
-        "H_cls_mean",
-        "H_conf_mean",
-        "H_att_mean",
-    ]
+    """Aggregate per-image heterophily scores across folds."""
+    metric_cols = [f"{m}_mean" for m in MEASURES]
 
     fold_level = (
         df.groupby(["fold", "split", "graph_variant"], as_index=False)[metric_cols]
@@ -226,6 +262,91 @@ def aggregate_results(df):
     return summary_df
 
 
+def aggregate_compatibility(df):
+    """Aggregate H_compat_matrix across folds for each split and graph_variant."""
+    if "H_compat_matrix" not in df.columns:
+        raise KeyError("Expected column 'H_compat_matrix' in dataframe")
+
+    fold_rows = []
+    for (fold, split, graph_variant), group in df.groupby(["fold", "split", "graph_variant"]):
+        matrices = [np.asarray(m) for m in group["H_compat_matrix"].tolist()]
+        if not matrices:
+            continue
+        fold_rows.append(
+            {
+                "fold": fold,
+                "split": split,
+                "graph_variant": graph_variant,
+                "fold_mean_matrix": np.mean(np.stack(matrices, axis=0), axis=0),
+            }
+        )
+
+    fold_df = pd.DataFrame(fold_rows)
+    if fold_df.empty:
+        raise ValueError("No compatibility matrices available to aggregate")
+
+    out_rows = []
+    for (split, graph_variant), group in fold_df.groupby(["split", "graph_variant"]):
+        matrices = np.stack(group["fold_mean_matrix"].to_list(), axis=0)
+        out_rows.append(
+            {
+                "split": split,
+                "graph_variant": graph_variant,
+                "mean_matrix": matrices.mean(axis=0),
+                "std_matrix": matrices.std(axis=0),
+            }
+        )
+
+    return pd.DataFrame(out_rows).sort_values(["split", "graph_variant"]).reset_index(drop=True)
+
+
+def plot_compatibility_matrices(compat_summary_df, split, output_dir):
+    """Plot mean compatibility matrices for one split as a 3x6 heatmap grid."""
+    import matplotlib.pyplot as plt
+    from pathlib import Path
+
+    graph_order = ["grid4", "grid8"]
+    graph_order.extend([f"knn{k}" for k in DEFAULT_K_VALUES])
+    graph_order.extend([f"random{r}" for r in DEFAULT_R_VALUES])
+
+    split_df = compat_summary_df[compat_summary_df["split"] == split].copy()
+    if split_df.empty:
+        raise ValueError(f"No compatibility matrices available for split={split!r}")
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes = plt.subplots(3, 6, figsize=(20, 10), sharex=True, sharey=True)
+    axes = axes.flatten()
+    last_im = None
+
+    for ax, graph_variant in zip(axes, graph_order):
+        row = split_df[split_df["graph_variant"] == graph_variant]
+        if row.empty:
+            ax.axis("off")
+            continue
+
+        mat = np.asarray(row.iloc[0]["mean_matrix"], dtype=float)
+        last_im = ax.imshow(mat, vmin=0.0, vmax=1.0, cmap="viridis", aspect="auto")
+        ax.set_title(graph_variant, fontsize=11)
+        ax.set_xticks(range(mat.shape[1]))
+        ax.set_yticks(range(mat.shape[0]))
+        ax.tick_params(axis="both", labelsize=8)
+
+    for ax in axes[len(graph_order):]:
+        ax.axis("off")
+
+    if last_im is not None:
+        fig.colorbar(last_im, ax=axes.tolist(), shrink=0.75, pad=0.01)
+
+    fig.suptitle(f"Compatibility matrices - {split}", fontsize=14)
+    fig.tight_layout()
+
+    png_path = output_dir / f"compatibility_{split}.png"
+    fig.savefig(png_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
 def plot_split(df_summary, split, output_dir):
     """Plot the fold-aggregated heterophily curves for one split.
 
@@ -238,52 +359,31 @@ def plot_split(df_summary, split, output_dir):
     output_dir : str or pathlib.Path
         Directory where the PNG and PDF should be saved.
     """
-    import matplotlib.pyplot as plt
-    from pathlib import Path
 
-    graph_order = [
-        "grid4",
-        "grid8",
-        "knn1",
-        "knn2",
-        "knn3",
-        "knn4",
-        "knn5",
-        "knn6",
-        "knn7",
-        "knn8",
-        "random1",
-        "random2",
-        "random3",
-        "random4",
-        "random5",
-        "random6",
-        "random7",
-        "random8",
-    ]
-    metric_order = [
-        "H_f_mean",
-        "H_e_mean",
-        "H_ent_mean",
-        "H_cls_mean",
-        "H_conf_mean",
-        "H_att_mean",
-    ]
+
+    graph_order = ["grid4", "grid8"]
+    graph_order.extend([f"knn{k}" for k in DEFAULT_K_VALUES])
+    graph_order.extend([f"random{r}" for r in DEFAULT_R_VALUES])
+    metric_order = [f"{m}_mean" for m in MEASURES]
     metric_titles = {
         "H_f_mean": "Feature heterophily (H_f)",
         "H_e_mean": "Evidence heterophily (H_e)",
-        "H_ent_mean": "Entropy heterophily (H_ent)",
         "H_cls_mean": "Dominant-class heterophily (H_cls)",
-        "H_conf_mean": "Confidence heterophily (H_conf)",
-        "H_att_mean": "Attention heterophily (H_att)",
+        "H_kl_mean": "KL heterophily (H_kl)",
+        "H_dirichlet_mean": "Dirichlet heterophily (H_dirichlet)",
+        "H_spatial_mean": "Spatial heterophily (H_spatial)",
+        "H_node_mean": "Node heterophily (H_node)",
+        "H_adj_mean": "Adjusted homophily (H_adj)",
     }
     metric_colors = {
         "H_f_mean": "blue",
         "H_e_mean": "orange",
-        "H_ent_mean": "green",
         "H_cls_mean": "red",
-        "H_conf_mean": "purple",
-        "H_att_mean": "brown",
+        "H_kl_mean": "purple",
+        "H_dirichlet_mean": "brown",
+        "H_spatial_mean": "green",
+        "H_node_mean": "gray",
+        "H_adj_mean": "black",
     }
 
     split_df = df_summary[df_summary["split"] == split].copy()
@@ -293,7 +393,7 @@ def plot_split(df_summary, split, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    fig, axes = plt.subplots(3, 2, figsize=(14, 12), sharex=True)
+    fig, axes = plt.subplots(4, 2, figsize=(16, 14), sharex=True)
     axes = axes.flatten()
     x_positions = np.arange(len(graph_order))
 
@@ -321,7 +421,7 @@ def plot_split(df_summary, split, output_dir):
         ax.set_xticklabels(graph_order, rotation=45, ha="right", fontsize=10)
         ax.grid(True, linestyle="--", alpha=0.3)
         ax.axvline(1.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
-        ax.axvline(9.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
+        ax.axvline(11.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
         ax.set_xlim(-0.5, len(graph_order) - 0.5)
 
     # Family labels under the x-axis.
@@ -335,7 +435,7 @@ def plot_split(df_summary, split, output_dir):
         fontsize=12,
     )
     axes[-1].text(
-        5.5,
+        6.5,
         -0.38,
         "kNN",
         transform=axes[-1].get_xaxis_transform(),
@@ -344,7 +444,7 @@ def plot_split(df_summary, split, output_dir):
         fontsize=12,
     )
     axes[-1].text(
-        13.5,
+        15.5,
         -0.38,
         "Random",
         transform=axes[-1].get_xaxis_transform(),
@@ -370,15 +470,18 @@ model_dirs = sorted([p for p in graph_root.iterdir() if p.is_dir()])
 if not model_dirs:
     raise FileNotFoundError(f"No model directories found under {graph_root}")
 
-model_dirs = model_dirs[:1]  # For testing, only process the first model directory
+# TODO: remove this line after testing
+model_dirs = model_dirs[:1]  # for testing, only process the first model directory
 for model_dir in model_dirs:
     results_df = build_master_summary(model_dir)
     summary_df = aggregate_results(results_df)
+    compat_summary_df = aggregate_compatibility(results_df)
 
     model_fig_dir = figures_root / model_dir.name
     for split in ["train", "val", "test"]:
         plot_split(summary_df, split, output_dir=model_fig_dir)
-
+        plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
+    
 
 # if __name__ == "__main__":
 #     main()
