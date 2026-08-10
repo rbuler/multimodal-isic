@@ -204,8 +204,9 @@ graph_outputs_root = Path("/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-i
 k = DEFAULT_K_VALUES
 r = DEFAULT_R_VALUES
 seed = 42
+model_dirs = sorted([p for p in patch_stats_root.iterdir() if p.is_dir()])
 
-for model_dir in sorted([p for p in patch_stats_root.iterdir() if p.is_dir()]):
+for model_dir in model_dirs:
     process_model_directory(
         model_dir=model_dir,
         output_root=graph_outputs_root,
