@@ -201,6 +201,17 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
         patch_df = _load_patch_stats_dataframe(f.parent.name)
         graph_df = _merge_graph_and_patch_stats(graph_df, patch_df)
 
+        # ---- DEBUG / TEST LIMIT ----
+        test_fold = 0
+        graph_df = graph_df[graph_df["fold"] == test_fold]
+
+        graph_df = (
+            graph_df[graph_df["split"].isin(["train", "val", "test"])]
+            .groupby("split", group_keys=False)
+            .head(100)
+        )
+        # ----------------------------
+
         for _, row in graph_df.iterrows():
             meta_base = {
                 "model_name": row["model_name"],
@@ -364,6 +375,9 @@ def plot_split(df_summary, split, output_dir):
     graph_order = ["grid4", "grid8"]
     graph_order.extend([f"knn{k}" for k in DEFAULT_K_VALUES])
     graph_order.extend([f"random{r}" for r in DEFAULT_R_VALUES])
+    display_labels = ["g4", "g8"]
+    display_labels.extend([f"k{k}" for k in DEFAULT_K_VALUES])
+    display_labels.extend([f"r{r}" for r in DEFAULT_R_VALUES])
     metric_order = [f"{m}_mean" for m in MEASURES]
     metric_titles = {
         "H_f_mean": "Feature heterophily (H_f)",
@@ -396,6 +410,11 @@ def plot_split(df_summary, split, output_dir):
     fig, axes = plt.subplots(4, 2, figsize=(16, 14), sharex=True)
     axes = axes.flatten()
     x_positions = np.arange(len(graph_order))
+    family_slices = {
+        "grid": slice(0, 2),
+        "knn": slice(2, 2 + len(DEFAULT_K_VALUES)),
+        "random": slice(2 + len(DEFAULT_K_VALUES), len(graph_order)),
+    }
 
     for ax, metric in zip(axes, metric_order):
         metric_df = split_df[split_df["metric"] == metric].copy()
@@ -404,21 +423,25 @@ def plot_split(df_summary, split, output_dir):
         y = metric_df["mean"].to_numpy(dtype=float)
         yerr = metric_df["std"].to_numpy(dtype=float)
 
-        ax.errorbar(
-            x_positions,
-            y,
-            yerr=yerr,
-            color=metric_colors[metric],
-            marker="o",
-            linewidth=2,
-            markersize=6,
-            capsize=4,
-            alpha=0.9,
-        )
+        for family, slc in family_slices.items():
+            family_x = x_positions[slc]
+            family_y = y[slc]
+            family_yerr = yerr[slc]
+            ax.errorbar(
+                family_x,
+                family_y,
+                yerr=family_yerr,
+                color=metric_colors[metric],
+                marker="o",
+                linewidth=2,
+                markersize=6,
+                capsize=4,
+                alpha=0.9,
+            )
         ax.set_title(metric_titles[metric], fontsize=13)
         ax.set_ylabel("Mean heterophily", fontsize=12)
         ax.set_xticks(x_positions)
-        ax.set_xticklabels(graph_order, rotation=45, ha="right", fontsize=10)
+        ax.set_xticklabels(display_labels, rotation=45, ha="right", fontsize=10)
         ax.grid(True, linestyle="--", alpha=0.3)
         ax.axvline(1.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
         ax.axvline(11.5, linestyle="--", color="gray", linewidth=1, alpha=0.7)
@@ -444,7 +467,7 @@ def plot_split(df_summary, split, output_dir):
         fontsize=12,
     )
     axes[-1].text(
-        15.5,
+        16.5,
         -0.38,
         "Random",
         transform=axes[-1].get_xaxis_transform(),
@@ -456,9 +479,7 @@ def plot_split(df_summary, split, output_dir):
     fig.tight_layout()
 
     png_path = output_dir / f"heterophily_{split}.png"
-    pdf_path = output_dir / f"heterophily_{split}.pdf"
     fig.savefig(png_path, dpi=300, bbox_inches="tight")
-    fig.savefig(pdf_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 # %%
@@ -471,8 +492,8 @@ if not model_dirs:
     raise FileNotFoundError(f"No model directories found under {graph_root}")
 
 # TODO: remove this line after testing
-model_dirs = model_dirs[:1]  # for testing, only process the first model directory
 for model_dir in model_dirs:
+    model_dir = model_dirs[0]  # for testing, only process the first model directory
     results_df = build_master_summary(model_dir)
     summary_df = aggregate_results(results_df)
     compat_summary_df = aggregate_compatibility(results_df)
@@ -481,7 +502,7 @@ for model_dir in model_dirs:
     for split in ["train", "val", "test"]:
         plot_split(summary_df, split, output_dir=model_fig_dir)
         plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
-    
+    break  # for testing, only process the first model directory
 
 # if __name__ == "__main__":
 #     main()
