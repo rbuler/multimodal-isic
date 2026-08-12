@@ -1,10 +1,11 @@
 import re
+import os
+import psutil
 import pickle
 import numpy as np
 import pandas as pd
 from pathlib import Path
 import matplotlib.pyplot as plt
-
 # %%
 EPS = 1e-8
 DEFAULT_K_VALUES = tuple(range(1, 9)) + (12, 16)
@@ -32,26 +33,27 @@ def _load_graph_dataframe(path):
     return df
 
 
-def _load_patch_stats_dataframe(model_name):
+def _load_patch_stats_dataframe(model_name, fold, split):
     model_dir = PATCH_STATS_ROOT / model_name
+
     if not model_dir.exists():
-        raise FileNotFoundError(f"Missing patch_stats model directory: {model_dir}")
+        raise FileNotFoundError(
+            f"Missing patch_stats model directory: {model_dir}"
+        )
 
-    frames = []
-    for path in sorted(model_dir.glob("patch_stats_fold_*_*.pkl")):
-        match = PATCH_STATS_RE.match(path.name)
-        if not match:
-            continue
-        frame = _load_graph_dataframe(path)
-        frame = frame.copy()
-        frame["fold"] = int(match.group("fold"))
-        frame["split"] = match.group("split")
-        frames.append(frame)
+    path = model_dir / f"patch_stats_fold_{fold}_{split}.pkl"
 
-    if not frames:
-        raise FileNotFoundError(f"No patch_stats pickle files found under {model_dir}")
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing patch_stats file: {path}"
+        )
 
-    return pd.concat(frames, ignore_index=True)
+    frame = _load_graph_dataframe(path)
+    frame = frame.copy()
+    frame["fold"] = int(fold)
+    frame["split"] = split
+
+    return frame
 
 
 def _merge_graph_and_patch_stats(graph_df, patch_df):
@@ -61,17 +63,6 @@ def _merge_graph_and_patch_stats(graph_df, patch_df):
         raise KeyError(f"Missing join columns for graph/patch merge: {missing_cols}")
 
     merged = graph_df.merge(patch_df, on=join_cols, how="inner", suffixes=("", "_patch"))
-
-    patch_cols = [
-        "patch_embeddings",
-        "patch_probs",
-        "dominant_class",
-    ]
-    for col in patch_cols:
-        patch_col = f"{col}_patch"
-        if patch_col in merged.columns:
-            merged[col] = merged[patch_col]
-
     return merged
 
 
@@ -84,19 +75,15 @@ def _edge_index_from_variant(row, graph_variant):
     param = match.group("param")
 
     if kind == "grid4":
-        return np.asarray(row["grid4_edge_index"])
+        return np.asarray(row.grid4_edge_index)
     if kind == "grid8":
-        return np.asarray(row["grid8_edge_index"])
+        return np.asarray(row.grid8_edge_index)
     if kind == "knn":
-        return np.asarray(row["knn_edge_indices"][int(param)])
+        return np.asarray(row.knn_edge_indices[int(param)])
     if kind == "random":
-        return np.asarray(row["random_edge_indices"][int(param)])
+        return np.asarray(row.random_edge_indices[int(param)])
     raise ValueError(f"Unsupported graph variant: {graph_variant}")
 
-
-# --------------------------------------------------------------------------
-# Edge-wise heterophily measures
-# --------------------------------------------------------------------------
 
 def _row_cosine_sim(a, b):
     num = np.sum(a * b, axis=1)
@@ -107,7 +94,7 @@ def _row_cosine_sim(a, b):
 def compute_edge_heterophily(row, graph_variant=None):
     """Compute scalar edge heterophily measures and a class compatibility matrix for one image."""
     if graph_variant is None:
-        edge_index = np.asarray(row["edge_index"])
+        edge_index = np.asarray(row.edge_index)
     else:
         edge_index = _edge_index_from_variant(row, graph_variant)
 
@@ -115,9 +102,9 @@ def compute_edge_heterophily(row, graph_variant=None):
     keep = src != dst  # defensive: strip any self-loops before averaging
     src, dst = src[keep], dst[keep]
 
-    embeddings = np.asarray(row["patch_embeddings"], dtype=np.float32)
-    patch_probs = np.asarray(row["patch_probs"], dtype=np.float32)
-    dominant_class = np.asarray(row["dominant_class"])
+    embeddings = np.asarray(row.patch_embeddings, dtype=np.float32)
+    patch_probs = np.asarray(row.patch_probs, dtype=np.float32)
+    dominant_class = np.asarray(row.dominant_class, dtype=np.int32)
 
     x_src, y_src = src % 14, src // 14
     x_dst, y_dst = dst % 14, dst // 14
@@ -143,18 +130,18 @@ def compute_edge_heterophily(row, graph_variant=None):
     else:
         h_adj = 1.0
 
-    compat_matrix, _, _ = np.histogram2d(
-        dominant_class[src],
-        dominant_class[dst],
-        bins=[np.arange(num_classes + 1), np.arange(num_classes + 1)],
-    )
-    row_sums = compat_matrix.sum(axis=1, keepdims=True)
-    compat_matrix = np.divide(
-        compat_matrix,
-        row_sums,
-        out=np.zeros_like(compat_matrix),
-        where=row_sums != 0,
-    )
+    # compat_matrix, _, _ = np.histogram2d(
+    #     dominant_class[src],
+    #     dominant_class[dst],
+    #     bins=[np.arange(num_classes + 1), np.arange(num_classes + 1)],
+    # )
+    # row_sums = compat_matrix.sum(axis=1, keepdims=True)
+    # compat_matrix = np.divide(
+    #     compat_matrix,
+    #     row_sums,
+    #     out=np.zeros_like(compat_matrix),
+    #     where=row_sums != 0,
+    # )
 
     return {
         "H_f": 1.0 - _row_cosine_sim(embeddings[src], embeddings[dst]),
@@ -165,7 +152,7 @@ def compute_edge_heterophily(row, graph_variant=None):
         "H_spatial": np.sqrt((x_src - x_dst) ** 2 + (y_src - y_dst) ** 2),
         "H_node": h_node,
         "H_adj": h_adj,
-        "H_compat_matrix": compat_matrix,
+        # "H_compat_matrix": compat_matrix,
     }
 
 
@@ -177,7 +164,7 @@ def _summarize_image(em, meta):
         out[f"{m}_mean"] = float(np.mean(vals))
         out[f"{m}_std"] = float(np.std(vals))
         out[f"{m}_median"] = float(np.median(vals))
-    out["H_compat_matrix"] = em["H_compat_matrix"]
+    # out["H_compat_matrix"] = em["H_compat_matrix"]
     return out
 
 
@@ -185,59 +172,63 @@ def _summarize_image(em, meta):
 # Build master summary of H across all Images, Folds, and Graph Variants
 # --------------------------------------------------------------------------
 
-def build_master_summary(root_dir, pattern="graph_dataset.pkl", verbose=True):
+def build_master_summary(root_dir, pattern="graph_dataset.pkl"):
     root_dir = Path(root_dir)
     files = sorted(root_dir.rglob(pattern))
+
     if not files:
         raise FileNotFoundError(f"No files matching {pattern!r} under {root_dir}")
 
     all_summaries = []
+
     for f in files:
-        if verbose:
-            print(f"Processing {f.name} ...")
-            print("Loading:", f)
-            print("Size:", f.stat().st_size)
+
         graph_df = _load_graph_dataframe(f)
-        patch_df = _load_patch_stats_dataframe(f.parent.name)
-        graph_df = _merge_graph_and_patch_stats(graph_df, patch_df)
 
-        # ---- DEBUG / TEST LIMIT ----
-        test_fold = 0
-        graph_df = graph_df[graph_df["fold"] == test_fold]
+        for (fold, split), graph_group in graph_df.groupby(["fold", "split"]):
+            print(f"Processing fold={fold}, split={split}")
+            patch_df = _load_patch_stats_dataframe(f.parent.name, int(fold), split)
+            merged = _merge_graph_and_patch_stats(graph_group, patch_df)
 
-        graph_df = (
-            graph_df[graph_df["split"].isin(["train", "val", "test"])]
-            .groupby("split", group_keys=False)
-            .head(100)
-        )
-        # ----------------------------
+            for row in merged.itertuples(index=False):
+                meta_base = {
+                    "model_name": row.model_name,
+                    "fold": int(row.fold),
+                    "split": row.split,
+                    "image_id": row.image_id,
+                    "label": getattr(row, "label", None),
+                }
+                variants = ["grid4", "grid8"]
+                variants.extend([f"knn{int(k)}" for k in row.knn_edge_indices.keys()])
+                variants.extend([f"random{int(r)}" for r in row.random_edge_indices.keys()])
 
-        for _, row in graph_df.iterrows():
-            meta_base = {
-                "model_name": row["model_name"],
-                "fold": int(row["fold"]),
-                "split": row["split"],
-                "image_id": row["image_id"],
-                "label": row.get("label", None),
-            }
+                for graph_variant in variants:
+                    em = compute_edge_heterophily(row, graph_variant=graph_variant)
+                    meta = {**meta_base, "graph_variant": graph_variant}
 
-            variants = ["grid4", "grid8"]
-            variants.extend([f"knn{int(k)}" for k in row["knn_edge_indices"].keys()])
-            variants.extend([f"random{int(r)}" for r in row["random_edge_indices"].keys()])
+                    meta["graph_type"] = (
+                        "grid"
+                        if graph_variant.startswith("grid")
+                        else (
+                            "knn"
+                            if graph_variant.startswith("knn")
+                            else "random"
+                        )
+                    )
 
-            for graph_variant in variants:
-                em = compute_edge_heterophily(row, graph_variant=graph_variant)
-                meta = {**meta_base, "graph_variant": graph_variant}
-                meta["graph_type"] = "grid" if graph_variant.startswith("grid") else ("knn" if graph_variant.startswith("knn") else "random")
-                if graph_variant.startswith("knn"):
-                    meta["graph_param"] = int(graph_variant[3:])
-                elif graph_variant.startswith("random"):
-                    meta["graph_param"] = int(graph_variant[6:])
-                else:
-                    meta["graph_param"] = None
-                all_summaries.append(pd.DataFrame([_summarize_image(em, meta)]))
+                    if graph_variant.startswith("knn"):
+                        meta["graph_param"] = int(graph_variant[3:])
+                    elif graph_variant.startswith("random"):
+                        meta["graph_param"] = int(graph_variant[6:])
+                    else:
+                        meta["graph_param"] = None
 
-    return pd.concat(all_summaries, ignore_index=True)
+                    all_summaries.append(_summarize_image(em, meta))
+
+            del merged
+            del patch_df
+
+    return pd.DataFrame.from_records(all_summaries)
 
 # --------------------------------------------------------------------------
 # Plots
@@ -491,17 +482,23 @@ model_dirs = sorted([p for p in graph_root.iterdir() if p.is_dir()])
 if not model_dirs:
     raise FileNotFoundError(f"No model directories found under {graph_root}")
 
-# TODO: remove this line after testing
 for model_dir in model_dirs:
-    model_dir = model_dirs[0]  # for testing, only process the first model directory
+
+    # TODO: remove this line after testing
+    # ####
+    model_dir = model_dirs[1]  # for testing, only process the first model directory
+    # ####
+
     results_df = build_master_summary(model_dir)
     summary_df = aggregate_results(results_df)
-    compat_summary_df = aggregate_compatibility(results_df)
+    # compat_summary_df = aggregate_compatibility(results_df)
 
     model_fig_dir = figures_root / model_dir.name
     for split in ["train", "val", "test"]:
         plot_split(summary_df, split, output_dir=model_fig_dir)
-        plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
+        # plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
+
+    # TODO remove
     break  # for testing, only process the first model directory
 
 # if __name__ == "__main__":
