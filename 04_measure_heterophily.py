@@ -210,10 +210,6 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl"):
             patch_df = _load_patch_stats_dataframe(f.parent.name, int(fold), split)
             merged = _merge_graph_and_patch_stats(graph_group, patch_df)
 
-            # --- DEBUG: limitowanie do 100 wierszy dla pary fold/split ---
-            merged = merged.head(100)
-            # -----------------------------------------------------------
-
             for row in merged.itertuples(index=False):
                 meta_base = {
                     "model_name": row.model_name,
