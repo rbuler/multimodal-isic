@@ -186,6 +186,7 @@ def build_master_summary(root_dir, pattern="graph_dataset.pkl"):
         graph_df = _load_graph_dataframe(f)
 
         for (fold, split), graph_group in graph_df.groupby(["fold", "split"]):
+
             print(f"Processing fold={fold}, split={split}")
             patch_df = _load_patch_stats_dataframe(f.parent.name, int(fold), split)
             merged = _merge_graph_and_patch_stats(graph_group, patch_df)
@@ -483,23 +484,14 @@ if not model_dirs:
     raise FileNotFoundError(f"No model directories found under {graph_root}")
 
 for model_dir in model_dirs:
-
-    # TODO: remove this line after testing
-    # ####
-    model_dir = model_dirs[1]  # for testing, only process the first model directory
-    # ####
-
     results_df = build_master_summary(model_dir)
     summary_df = aggregate_results(results_df)
-    # compat_summary_df = aggregate_compatibility(results_df)
+    compat_summary_df = aggregate_compatibility(results_df)
 
     model_fig_dir = figures_root / model_dir.name
     for split in ["train", "val", "test"]:
         plot_split(summary_df, split, output_dir=model_fig_dir)
-        # plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
-
-    # TODO remove
-    break  # for testing, only process the first model directory
+        plot_compatibility_matrices(compat_summary_df, split, output_dir=model_fig_dir)
 
 # if __name__ == "__main__":
 #     main()
