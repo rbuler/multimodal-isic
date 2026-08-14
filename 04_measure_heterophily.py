@@ -284,6 +284,22 @@ def aggregate_results(df):
     return summary_df
 
 
+def mean_compatibility_matrices(matrices):
+    matrices = np.stack(matrices, axis=0)
+
+    row_support = matrices.sum(axis=2) > 0
+
+    result = np.zeros(matrices.shape[1:], dtype=float)
+
+    for cls in range(matrices.shape[1]):
+        valid = row_support[:, cls]
+
+        if np.any(valid):
+            result[cls] = matrices[valid, cls].mean(axis=0)
+
+    return result
+
+
 def aggregate_compatibility(df):
     """Aggregate H_compat_matrix across folds for each split and graph_variant."""
     if "H_compat_matrix" not in df.columns:
@@ -299,7 +315,7 @@ def aggregate_compatibility(df):
                 "fold": fold,
                 "split": split,
                 "graph_variant": graph_variant,
-                "fold_mean_matrix": np.mean(np.stack(matrices, axis=0), axis=0),
+                "fold_mean_matrix": mean_compatibility_matrices(matrices),
             }
         )
 
@@ -314,7 +330,7 @@ def aggregate_compatibility(df):
             {
                 "split": split,
                 "graph_variant": graph_variant,
-                "mean_matrix": matrices.mean(axis=0),
+                "mean_matrix": mean_compatibility_matrices(matrices),
                 "std_matrix": matrices.std(axis=0),
             }
         )
@@ -558,6 +574,26 @@ for model_dir in model_dirs:
     results_df = build_master_summary(model_dir)
     summary_df = aggregate_results(results_df)
     compat_summary_df = aggregate_compatibility(results_df)
+
+
+
+
+    # save these dfs
+    summary_out_path = model_dir / "heterophily_summary.pkl"
+    compat_out_path = model_dir / "compatibility_summary.pkl"
+    results_out_path = model_dir / "heterophily_results.pkl"
+
+    with open(summary_out_path, "wb") as f:
+        pickle.dump(summary_df, f)
+    with open(compat_out_path, "wb") as f:
+        pickle.dump(compat_summary_df, f)
+    with open(results_out_path, "wb") as f:
+        pickle.dump(results_df, f)
+
+    print(f"Saved: {summary_out_path}")
+    print(f"Saved: {compat_out_path}")
+    print(f"Saved: {results_out_path}")
+    break
 
     model_fig_dir = figures_root / model_dir.name
     for split in ["train", "val", "test"]:
