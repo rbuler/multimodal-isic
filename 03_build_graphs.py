@@ -34,15 +34,6 @@ def _grid_edge_index(connect_diagonals=False):
     return edge_index
 
 
-def _grid_adjacency(connect_diagonals=False, add_self_loops=True):
-    edge_index = _grid_edge_index(connect_diagonals=connect_diagonals)
-    adj = torch.zeros((NUM_NODES, NUM_NODES), dtype=torch.float32)
-    adj[edge_index[0], edge_index[1]] = 1.0
-    if add_self_loops:
-        adj.fill_diagonal_(1.0)
-    return adj, edge_index
-
-
 def _knn_edge_index(x, k=8):
     if x.ndim != 2:
         raise ValueError("x must be a 2D tensor [num_nodes, feature_dim]")
@@ -85,42 +76,6 @@ def _random_edge_index(num_nodes, r=4, seed=None):
     edge_index = torch.cat([edge_index, edge_index.flip(0)], dim=1)
     edge_index = torch.unique(edge_index, dim=1)
     return edge_index
-
-
-def build_graph_blueprints(row, graph_type, k=8, r=4, connect_diagonals=False, seed=42):
-    patch_embeddings = torch.as_tensor(row["patch_embeddings"], dtype=torch.float32)
-    if patch_embeddings.ndim != 2:
-        raise ValueError(f"patch_embeddings must be 2D, got shape {tuple(patch_embeddings.shape)}")
-    if patch_embeddings.size(0) != NUM_NODES:
-        raise ValueError(f"Expected {NUM_NODES} nodes, got {patch_embeddings.size(0)}")
-
-    if graph_type == "grid":
-        adjacency, edge_index = _grid_adjacency(connect_diagonals=connect_diagonals)
-        return {
-            "graph_type": "grid",
-            "connect_diagonals": bool(connect_diagonals),
-            "adjacency": adjacency.numpy(),
-            "edge_index": edge_index.numpy(),
-        }
-
-    if graph_type == "knn":
-        edge_index = _knn_edge_index(patch_embeddings, k=k)
-        return {
-            "graph_type": "knn",
-            "k": int(k),
-            "edge_index": edge_index.numpy(),
-        }
-
-    if graph_type == "random":
-        edge_index = _random_edge_index(NUM_NODES, r=r, seed=seed)
-        return {
-            "graph_type": "random",
-            "r": int(r),
-            "seed": None if seed is None else int(seed),
-            "edge_index": edge_index.numpy(),
-        }
-
-    raise ValueError(f"Unsupported graph_type={graph_type!r}")
 
 
 def _as_list(value):
