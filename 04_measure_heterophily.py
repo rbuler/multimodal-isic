@@ -104,12 +104,6 @@ def _edge_index_from_variant(row, graph_variant):
     raise ValueError(f"Unsupported graph variant: {graph_variant}")
 
 
-def _row_cosine_sim(a, b):
-    num = np.sum(a * b, axis=1)
-    denom = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1) + EPS
-    return num / denom
-
-
 def compute_edge_heterophily(row, graph_variant=None):
     """Compute scalar edge heterophily measures and a class compatibility matrix for one image."""
     if graph_variant is None:
