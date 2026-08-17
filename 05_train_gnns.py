@@ -15,6 +15,7 @@ evaluated once with each fold's validation-selected checkpoint.
 
 import argparse
 import copy
+import os
 import pickle
 import random
 from collections import Counter
@@ -363,6 +364,20 @@ def aggregate(metric_rows: List[Dict], prefix: str) -> Dict[str, float]:
             for metric in ("accuracy", "bacc", "auc", "macro_f1") for stat in ("mean", "std")}
 
 
+RESULT_KEY = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden_dim",
+              "num_layers", "dropout", "learning_rate", "weight_decay"]
+
+
+def save_results(results: pd.DataFrame, output_path: Path) -> None:
+    """Atomically replace the CSV so completed variants survive job timeouts."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = output_path.with_suffix(output_path.suffix + ".tmp")
+    results.sort_values(["embedding_model", "graph_variant", "graph_model"]).to_csv(
+        temporary_path, index=False
+    )
+    os.replace(temporary_path, output_path)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
@@ -392,12 +407,23 @@ def main() -> None:
     unknown = sorted(set(args.variants) - set(graph_variants()))
     if unknown:
         raise ValueError(f"Unsupported variants: {unknown}")
-    results = []
+    output_path = args.results_csv if args.results_csv.is_absolute() else root / args.results_csv
+    if output_path.exists():
+        results = pd.read_csv(output_path)
+        completed = (set(map(tuple, results[RESULT_KEY].itertuples(index=False, name=None)))
+                     if set(RESULT_KEY).issubset(results.columns) else set())
+    else:
+        results, completed = pd.DataFrame(), set()
 
     for embedding_model in models:
         if embedding_model not in available_models:
             raise FileNotFoundError(f"No graph artifacts for embedding model {embedding_model}")
         for variant in args.variants:
+            experiment_key = (embedding_model, variant, args.gnn, args.seed, args.hidden_dim,
+                              args.num_layers, args.dropout, args.learning_rate, args.weight_decay)
+            if experiment_key in completed:
+                print(f"Skipping completed experiment: {embedding_model} | {variant} | {args.gnn}")
+                continue
             fold_validation, fold_test, epochs = [], [], []
             for fold in args.folds:
                 train = load_fold_records(root, embedding_model, fold, "train", variant)
@@ -413,7 +439,7 @@ def main() -> None:
                 epochs.append(best_epoch)
                 print(f"{embedding_model} | {variant} | fold {fold}: "
                       f"val BAcc={val_metrics['bacc']:.4f}, test BAcc={test_metrics['bacc']:.4f}")
-            results.append({
+            result = {
                 "embedding_model": embedding_model,
                 "graph_variant": variant,
                 "graph_model": args.gnn,
@@ -428,18 +454,12 @@ def main() -> None:
                 "best_epoch_std": float(np.std(epochs, ddof=0)),
                 **aggregate(fold_validation, "val"),
                 **aggregate(fold_test, "test"),
-            })
-
-    output_path = args.results_csv if args.results_csv.is_absolute() else root / args.results_csv
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    new_results = pd.DataFrame(results)
-    if output_path.exists():
-        existing = pd.read_csv(output_path)
-        key = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden_dim", "num_layers",
-               "dropout", "learning_rate", "weight_decay"]
-        new_results = pd.concat([existing, new_results], ignore_index=True).drop_duplicates(key, keep="last")
-    new_results.sort_values(["embedding_model", "graph_variant", "graph_model"]).to_csv(output_path, index=False)
-    print(f"Saved {len(new_results)} common experiment rows to {output_path}")
+            }
+            results = pd.concat([results, pd.DataFrame([result])], ignore_index=True)
+            results = results.drop_duplicates(RESULT_KEY, keep="last")
+            save_results(results, output_path)
+            completed.add(experiment_key)
+            print(f"Saved {len(results)} completed experiment rows to {output_path}")
 
 
 if __name__ == "__main__":
