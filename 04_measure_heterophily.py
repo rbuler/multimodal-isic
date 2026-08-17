@@ -569,7 +569,6 @@ for model_dir in model_dirs:
     summary_df = aggregate_results(results_df)
     compat_summary_df = aggregate_compatibility(results_df)
 
-    # save these dfs
     summary_out_path = model_dir / "heterophily_summary.pkl"
     compat_out_path = model_dir / "compatibility_summary.pkl"
     results_out_path = model_dir / "heterophily_results.pkl"
@@ -580,11 +579,6 @@ for model_dir in model_dirs:
         pickle.dump(compat_summary_df, f)
     with open(results_out_path, "wb") as f:
         pickle.dump(results_df, f)
-
-    print(f"Saved: {summary_out_path}")
-    print(f"Saved: {compat_out_path}")
-    print(f"Saved: {results_out_path}")
-    # break
 
     model_fig_dir = figures_root / model_dir.name
     for split in ["train", "val", "test"]:
