@@ -323,7 +323,6 @@ def train_one_fold(train_records: List[Dict], val_records: List[Dict], test_reco
             no_improvement += 1
         if no_improvement >= args.patience:
             break
-        print(f"Epoch:{epoch}, b-acc: {best_bacc}\n")
 
     model.load_state_dict(best_state)
     return (evaluate(model, val_records, criterion, device, num_classes),
