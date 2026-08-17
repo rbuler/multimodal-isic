@@ -80,7 +80,8 @@ class GraphMIL(nn.Module):
         self.gnn_heads = gnn_heads
         self.gnn_concat = gnn_concat
         
-        if use_residual and input_dim != gnn_hidden:
+
+        if (use_residual or self.gnn_type == "fagcn") and input_dim != gnn_hidden:
             self.input_proj = nn.Linear(input_dim, gnn_hidden)
         else:
             self.input_proj = None
@@ -95,6 +96,30 @@ class GraphMIL(nn.Module):
             
             if self.gnn_type == 'gcn':
                 layer = pyg_nn.GCNConv(in_dim, out_dim)
+            elif self.gnn_type == 'gat':
+                layer = pyg_nn.GATConv(in_dim, out_dim, heads=self.gnn_heads,
+                                       concat=self.gnn_concat, dropout=gnn_dropout)
+                out_dim *= self.gnn_heads if self.gnn_concat else 1
+            elif self.gnn_type == 'graphsage':
+                layer = pyg_nn.SAGEConv(in_dim, out_dim, aggr='mean', normalize=True)
+            elif self.gnn_type == 'gin':
+                mlp = nn.Sequential(
+                    nn.Linear(in_dim, out_dim), nn.ReLU(), nn.Linear(out_dim, out_dim)
+                )
+                layer = pyg_nn.GINConv(mlp, train_eps=True)
+            elif self.gnn_type == 'transformer':
+                layer = pyg_nn.TransformerConv(in_dim, out_dim, heads=self.gnn_heads,
+                                               concat=self.gnn_concat, dropout=gnn_dropout,
+                                               beta=True)
+                out_dim *= self.gnn_heads if self.gnn_concat else 1
+            elif self.gnn_type == 'gatv2':
+                layer = pyg_nn.GATv2Conv(in_dim, out_dim, heads=self.gnn_heads,
+                                       concat=self.gnn_concat, dropout=gnn_dropout)
+            elif self.gnn_type == 'fagcn':
+                if in_dim != out_dim:
+                    raise ValueError("FAGCN requires a constant hidden dimension")
+                layer = pyg_nn.FAConv(out_dim, eps=0.1, dropout=gnn_dropout)
+            
             else:
                 raise ValueError(f"Unsupported gnn_type: {self.gnn_type}")
             
@@ -162,7 +187,10 @@ class GraphMIL(nn.Module):
         for i, layer in enumerate(self.gnn_layers):
             h_prev = h
 
-            h = layer(h, edge_index, edge_weight)
+            if self.gnn_type in {'gcn', 'fagcn'}:
+                h = layer(h, edge_index, edge_weight)
+            else:
+                h = layer(h, edge_index)
             
             # Layer normalization
             if self.use_layer_norm:
@@ -341,8 +369,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
     parser.add_argument("--variants", nargs="*", default=graph_variants())
     parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
-    parser.add_argument("--gnn", choices=["gcn", "gat", "gin", "graphsage", "transformer"], default="gcn")
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--gnn", choices=["gcn", "gat", "gatv2", "gin", "graphsage", "transformer", "fagcn"], default="gcn")
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=16)
     parser.add_argument("--min-delta", type=float, default=1e-6)
     parser.add_argument("--hidden-dim", type=int, default=128)
