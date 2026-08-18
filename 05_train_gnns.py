@@ -36,6 +36,7 @@ from utils import get_args_parser
 
 
 DEFAULT_NEIGHBORS = tuple(range(1, 9)) + (12, 16)
+GNN_TYPES = ("mlp", "gcn", "gat", "gatv2", "gin", "graphsage", "transformer", "fagcn", "gcnii")
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
 with open(args.config_path) as file:
@@ -58,7 +59,7 @@ class GraphMIL(nn.Module):
     Enhanced Graph-based Multiple Instance Learning model.
     
     Recommended configurations for 196 patches  x 768 features:
-    - gnn_type: 'gat', 'gcn', 'gin' (most expressive), 
+    - gnn_type: 'mlp', 'gat', 'gcn', 'gin' (most expressive), 
                 'graphsage' (most efficient), 'transformer' (attention-based)
     - gnn_hidden: 256-512 (balance between capacity and efficiency)
     - gnn_layers: 2-3 (deeper can oversmooth)
@@ -67,7 +68,7 @@ class GraphMIL(nn.Module):
     """
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, k_neighbors=8,
-                 gnn_heads=4, gnn_concat=True,
+                 gnn_heads=4, gnn_concat=True, gcnii_alpha=0.1, gcnii_theta=0.5,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
                  classifier_dim=128, classifier_light=False, num_classes=7,
                  use_residual=True, use_layer_norm=True):
@@ -82,7 +83,7 @@ class GraphMIL(nn.Module):
         self.gnn_concat = gnn_concat
         
 
-        if (use_residual or self.gnn_type == "fagcn") and input_dim != gnn_hidden:
+        if (use_residual or self.gnn_type in {"fagcn", "gcnii"}) and input_dim != gnn_hidden:
             self.input_proj = nn.Linear(input_dim, gnn_hidden)
         else:
             self.input_proj = None
@@ -120,6 +121,12 @@ class GraphMIL(nn.Module):
                 if in_dim != out_dim:
                     raise ValueError("FAGCN requires a constant hidden dimension")
                 layer = pyg_nn.FAConv(out_dim, eps=0.1, dropout=gnn_dropout)
+            elif self.gnn_type == 'gcnii':
+                if in_dim != out_dim:
+                    raise ValueError("GCNII requires a constant hidden dimension across layers")
+                layer = pyg_nn.GCN2Conv(out_dim, alpha=gcnii_alpha, theta=gcnii_theta, layer=i + 1)
+            elif self.gnn_type == 'mlp':
+                layer = nn.Sequential(nn.Linear(in_dim, out_dim))
             
             else:
                 raise ValueError(f"Unsupported gnn_type: {self.gnn_type}")
@@ -183,12 +190,17 @@ class GraphMIL(nn.Module):
             x_input = x
         
         h = x_input
+        x_0 = x_input  # For GCNII
 
         # GNN layers with residual connections
         for i, layer in enumerate(self.gnn_layers):
             h_prev = h
 
-            if self.gnn_type in {'gcn', 'fagcn'}:
+            if self.gnn_type == 'mlp':
+                h = layer(h)
+            elif self.gnn_type == 'gcnii':
+                h = layer(h, x_0, edge_index, edge_weight)
+            elif self.gnn_type in {'gcn', 'fagcn'}:
                 h = layer(h, edge_index, edge_weight)
             else:
                 h = layer(h, edge_index)
@@ -368,6 +380,25 @@ RESULT_KEY = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden
               "num_layers", "dropout", "learning_rate", "weight_decay"]
 
 
+def export_detailed_fold_results(fold_records: List[Dict], output_path: Path) -> None:
+    """Saves unaggregated per-fold test metrics for statistical testing (Friedman/Wilcoxon)."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df_new = pd.DataFrame(fold_records)
+    
+    if output_path.exists():
+        df_existing = pd.read_csv(output_path)
+        df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+        # Drop duplicates in case an experiment was rerun
+        df_combined = df_combined.drop_duplicates(
+            subset=["embedding_model", "graph_variant", "graph_model", "fold", "seed"], 
+            keep="last"
+        )
+    else:
+        df_combined = df_new
+        
+    df_combined.to_csv(output_path, index=False)
+
+
 def save_results(results: pd.DataFrame, output_path: Path) -> None:
     """Atomically replace the CSV so completed variants survive job timeouts."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -384,36 +415,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
     parser.add_argument("--variants", nargs="*", default=graph_variants())
     parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
-    parser.add_argument("--gnn", choices=["gcn", "gat", "gatv2", "gin", "graphsage", "transformer", "fagcn"], default="gcn")
+    parser.add_argument("--gnn", nargs="+", choices=GNN_TYPES, default=list(GNN_TYPES),
+                        help="GNN architectures to run; defaults to all supported architectures.")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=16)
     parser.add_argument("--min-delta", type=float, default=1e-6)
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=2)
-    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--dropout", type=float, default=0.5)
     parser.add_argument("--learning-rate", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--results-csv", type=Path, default=Path("gnn_results/common_results.csv"))
+    parser.add_argument("--job-id", type=str, default="0", help="Unique identifier for parallel jobs")
     return parser.parse_args()
 
 
-def main() -> None:
-    args = parse_args()
+def run_gnn_experiments(args: argparse.Namespace) -> None:
     root, device = args.root.resolve(), torch.device(args.device)
     available_models = sorted(path.name for path in (root / "graph_outputs").iterdir() if path.is_dir())
     models = args.models or available_models
+
     unknown = sorted(set(args.variants) - set(graph_variants()))
     if unknown:
         raise ValueError(f"Unsupported variants: {unknown}")
-    output_path = args.results_csv if args.results_csv.is_absolute() else root / args.results_csv
+
+    output_dir = args.results_csv.parent if args.results_csv.is_absolute() else root / args.results_csv.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"results_job_{args.job_id}.csv"
+    detailed_csv_path = output_dir / f"detailed_fold_results_job_{args.job_id}.csv"
+
+    completed = set()
+    for existing_csv in output_dir.glob("results_job_*.csv"):
+        try:
+            df_existing = pd.read_csv(existing_csv)
+            if set(RESULT_KEY).issubset(df_existing.columns):
+                completed.update(set(map(tuple, df_existing[RESULT_KEY].itertuples(index=False, name=None))))
+        except Exception:
+            pass
+
     if output_path.exists():
         results = pd.read_csv(output_path)
-        completed = (set(map(tuple, results[RESULT_KEY].itertuples(index=False, name=None)))
-                     if set(RESULT_KEY).issubset(results.columns) else set())
     else:
-        results, completed = pd.DataFrame(), set()
+        results = pd.DataFrame()
 
     for embedding_model in models:
         if embedding_model not in available_models:
@@ -425,6 +470,7 @@ def main() -> None:
                 print(f"Skipping completed experiment: {embedding_model} | {variant} | {args.gnn}")
                 continue
             fold_validation, fold_test, epochs = [], [], []
+            dedicated_fold_results = []
             for fold in args.folds:
                 train = load_fold_records(root, embedding_model, fold, "train", variant)
                 validation = load_fold_records(root, embedding_model, fold, "val", variant)
@@ -437,6 +483,16 @@ def main() -> None:
                 fold_validation.append(val_metrics)
                 fold_test.append(test_metrics)
                 epochs.append(best_epoch)
+                dedicated_fold_results.append({
+                    "embedding_model": embedding_model,
+                    "graph_variant": variant,
+                    "graph_model": args.gnn,
+                    "fold": fold,
+                    "seed": args.seed,
+                    "best_epoch": best_epoch,
+                    **{f"test_{k}": v for k, v in test_metrics.items()},
+                    **{f"val_{k}": v for k, v in val_metrics.items()},
+                })
                 print(f"{embedding_model} | {variant} | fold {fold}: "
                       f"val BAcc={val_metrics['bacc']:.4f}, test BAcc={test_metrics['bacc']:.4f}")
             result = {
@@ -458,8 +514,17 @@ def main() -> None:
             results = pd.concat([results, pd.DataFrame([result])], ignore_index=True)
             results = results.drop_duplicates(RESULT_KEY, keep="last")
             save_results(results, output_path)
+            export_detailed_fold_results(dedicated_fold_results, detailed_csv_path)
             completed.add(experiment_key)
             print(f"Saved {len(results)} completed experiment rows to {output_path}")
+
+
+def main() -> None:
+    base_args = parse_args()
+    for gnn_type in base_args.gnn:
+        args = copy.copy(base_args)
+        args.gnn = gnn_type
+        run_gnn_experiments(args)
 
 
 if __name__ == "__main__":
