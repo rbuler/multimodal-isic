@@ -67,8 +67,8 @@ class GraphMIL(nn.Module):
     - use_layer_norm: True (stabilizes training)
     """
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
-                 gnn_layers=2, gnn_dropout=0.1, k_neighbors=8,
-                 gnn_heads=4, gnn_concat=True, gcnii_alpha=0.1, gcnii_theta=0.5,
+                 gnn_layers=2, gnn_dropout=0.1, gnn_heads=4,
+                 gnn_concat=True, gcnii_alpha=0.1, gcnii_theta=0.5,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
                  classifier_dim=128, classifier_light=False, num_classes=7,
                  use_residual=True, use_layer_norm=True):
@@ -77,7 +77,6 @@ class GraphMIL(nn.Module):
         self.gnn_type = gnn_type.lower()
         self.use_residual = use_residual
         self.use_layer_norm = use_layer_norm
-        self.k_neighbors = k_neighbors
         self.classifier_light = classifier_light
         self.gnn_heads = gnn_heads
         self.gnn_concat = gnn_concat
@@ -324,18 +323,27 @@ def train_one_fold(train_records: List[Dict], val_records: List[Dict], test_reco
                    input_dim: int, device: torch.device) -> Tuple[Dict, Dict, int]:
     set_seed(args.seed + fold)
 
-    model = GraphMIL(input_dim=input_dim,
-                    gnn_type=args.gnn,
-                    gnn_hidden=int(config.get('gnn_hidden', 128)),
-                    gnn_layers=int(config.get('gnn_layers', 2)),
-                    gnn_dropout=float(config.get('gnn_dropout', 0.0)),
-                    gnn_heads=int(config.get('gnn_heads', 4)),
-                    gnn_concat=bool(config.get('gnn_concat', True)),
-                    att_dim=int(config.get('att_dim', 64)),
-                    pool_dropout=float(config.get('pool_dropout', 0.0)),
-                    classifier_dim=int(config.get('classifier_dim', 64)),
-                    classifier_light=bool(config.get('classifier_light', False)),
-                    num_classes=num_classes).to(device)
+    model = GraphMIL(
+                    input_dim=input_dim,
+                    gnn_type=args.gnn if isinstance(args.gnn, str) else args.gnn[0],
+                    
+                    # 1. Hiperparametry sterowane ze skryptu Slurma (z args):
+                    gnn_hidden=args.hidden_dim,   # z CLI: --hidden-dim
+                    gnn_layers=args.num_layers,   # z CLI: --num-layers
+                    gnn_dropout=args.dropout,     # z CLI: --dropout
+                    
+                    # 2. Domyślne/stałe parametry dla pozostałych składowych:
+                    gnn_heads=4,                  # domyślna liczba głowic dla GAT / Transformer
+                    gnn_concat=True,              # konkatenacja wyników z głowic
+                    att_dim=128,                  # wymiar przestrzeni uwagi w Attention Pooling
+                    att_heads=4,                  # liczba głowic w pooling-u
+                    pool_dropout=0.2,             # dropout w warstwie klasyfikatora/pooling
+                    classifier_dim=128,           # wymiar ukryty klasyfikatora MLP
+                    classifier_light=True,        # pełny klasyfikator z LayerNorm
+                    num_classes=num_classes,      # wykryta liczba klas
+                    use_residual=True,            # połączenia rezydualne (zapobiegają oversmoothingowi)
+                    use_layer_norm=True           # normalizacja warstwowa
+                ).to(device)
 
     counts = Counter(record["y"] for record in train_records)
     weights = torch.tensor([len(train_records) / (num_classes * counts.get(c, 1))
@@ -423,7 +431,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.5)
-    parser.add_argument("--learning-rate", type=float, default=1e-3)
+    parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -463,7 +471,13 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
     for embedding_model in models:
         if embedding_model not in available_models:
             raise FileNotFoundError(f"No graph artifacts for embedding model {embedding_model}")
-        for variant in args.variants:
+        
+        if args.gnn.lower() == "mlp":
+            variants_to_run = ["none"]
+        else:
+            variants_to_run = args.variants
+            
+        for variant in variants_to_run:
             experiment_key = (embedding_model, variant, args.gnn, args.seed, args.hidden_dim,
                               args.num_layers, args.dropout, args.learning_rate, args.weight_decay)
             if experiment_key in completed:
@@ -489,6 +503,9 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
                     "graph_model": args.gnn,
                     "fold": fold,
                     "seed": args.seed,
+                    "hidden_dim": args.hidden_dim,
+                    "num_layers": args.num_layers,
+                    "dropout": args.dropout,
                     "best_epoch": best_epoch,
                     **{f"test_{k}": v for k, v in test_metrics.items()},
                     **{f"val_{k}": v for k, v in val_metrics.items()},
