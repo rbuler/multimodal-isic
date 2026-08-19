@@ -1,9 +1,5 @@
 """Cross-validated graph classification from saved patch embeddings.
 
-This script intentionally has no dependency on torch-geometric.  The default
-``GraphClassifier`` is a small, working GCN-style model and is the single
-class to replace when comparing other graph architectures.
-
 Input artifacts are produced by 01--03:
   patch_stats/<embedding_model>/patch_stats_fold_<fold>_<split>.pkl
   graph_outputs/<embedding_model>/graph_dataset.pkl
@@ -55,17 +51,6 @@ def set_seed(seed: int) -> None:
 
 
 class GraphMIL(nn.Module):
-    """
-    Enhanced Graph-based Multiple Instance Learning model.
-    
-    Recommended configurations for 196 patches  x 768 features:
-    - gnn_type: 'mlp', 'gat', 'gcn', 'gin' (most expressive), 
-                'graphsage' (most efficient), 'transformer' (attention-based)
-    - gnn_hidden: 256-512 (balance between capacity and efficiency)
-    - gnn_layers: 2-3 (deeper can oversmooth)
-    - use_residual: True (helps training deeper networks)
-    - use_layer_norm: True (stabilizes training)
-    """
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, gnn_heads=4,
                  gnn_concat=True, gcnii_alpha=0.1, gcnii_theta=0.5,
@@ -140,7 +125,6 @@ class GraphMIL(nn.Module):
         self.gnn_dropout = nn.Dropout(gnn_dropout)
         self.final_gnn_dim = in_dim
         
-        # Multi-head attention pooling (better than single attention)
         self.att_heads = att_heads
         self.attention_layers = nn.ModuleList([
             nn.Sequential(
@@ -216,7 +200,7 @@ class GraphMIL(nn.Module):
             if self.use_residual and h_prev.shape == h.shape:
                 h = h + h_prev
         
-        # Multi-head attention pooling
+        # Multi-head atention pooling
         attention_weights = []
         pooled_features = []
         
@@ -323,27 +307,23 @@ def train_one_fold(train_records: List[Dict], val_records: List[Dict], test_reco
                    input_dim: int, device: torch.device) -> Tuple[Dict, Dict, int]:
     set_seed(args.seed + fold)
 
-    model = GraphMIL(
-                    input_dim=input_dim,
+    model = GraphMIL(input_dim=input_dim,
                     gnn_type=args.gnn if isinstance(args.gnn, str) else args.gnn[0],
                     
-                    # 1. Hiperparametry sterowane ze skryptu Slurma (z args):
                     gnn_hidden=args.hidden_dim,   # z CLI: --hidden-dim
                     gnn_layers=args.num_layers,   # z CLI: --num-layers
                     gnn_dropout=args.dropout,     # z CLI: --dropout
                     
-                    # 2. Domyślne/stałe parametry dla pozostałych składowych:
-                    gnn_heads=4,                  # domyślna liczba głowic dla GAT / Transformer
-                    gnn_concat=True,              # konkatenacja wyników z głowic
-                    att_dim=128,                  # wymiar przestrzeni uwagi w Attention Pooling
-                    att_heads=4,                  # liczba głowic w pooling-u
-                    pool_dropout=0.2,             # dropout w warstwie klasyfikatora/pooling
-                    classifier_dim=128,           # wymiar ukryty klasyfikatora MLP
-                    classifier_light=True,        # pełny klasyfikator z LayerNorm
-                    num_classes=num_classes,      # wykryta liczba klas
-                    use_residual=True,            # połączenia rezydualne (zapobiegają oversmoothingowi)
-                    use_layer_norm=True           # normalizacja warstwowa
-                ).to(device)
+                    gnn_heads=4,
+                    gnn_concat=True,
+                    att_dim=128,
+                    att_heads=4,
+                    pool_dropout=0.2,
+                    classifier_dim=128,
+                    classifier_light=True,
+                    num_classes=num_classes,
+                    use_residual=True,
+                    use_layer_norm=True).to(device)
 
     counts = Counter(record["y"] for record in train_records)
     weights = torch.tensor([len(train_records) / (num_classes * counts.get(c, 1))
