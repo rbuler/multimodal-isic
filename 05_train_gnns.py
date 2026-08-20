@@ -29,15 +29,14 @@ from torch_geometric import nn as pyg_nn
 import yaml
 from utils import get_args_parser
 
-
-
 DEFAULT_NEIGHBORS = tuple(range(1, 9)) + (12, 16)
 GNN_TYPES = ("mlp", "gcn", "gat", "gatv2", "gin", "graphsage", "transformer", "fagcn", "gcnii")
+RESULT_KEY = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden_dim",
+              "num_layers", "dropout", "learning_rate", "weight_decay"]
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
 with open(args.config_path) as file:
     config = yaml.load(file, Loader=yaml.FullLoader)
-
 
 
 def set_seed(seed: int) -> None:
@@ -48,7 +47,6 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-
 
 class GraphMIL(nn.Module):
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
@@ -228,6 +226,8 @@ def graph_variants() -> List[str]:
 
 
 def edge_index_for_variant(row: pd.Series, variant: str) -> np.ndarray:
+    if variant == "none":
+        return None  # MLP does not use graph structure
     if variant == "grid4":
         return np.asarray(row["grid4_edge_index"], dtype=np.int64)
     if variant == "grid8":
@@ -364,10 +364,6 @@ def aggregate(metric_rows: List[Dict], prefix: str) -> Dict[str, float]:
             for metric in ("accuracy", "bacc", "auc", "macro_f1") for stat in ("mean", "std")}
 
 
-RESULT_KEY = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden_dim",
-              "num_layers", "dropout", "learning_rate", "weight_decay"]
-
-
 def export_detailed_fold_results(fold_records: List[Dict], output_path: Path) -> None:
     """Saves unaggregated per-fold test metrics for statistical testing (Friedman/Wilcoxon)."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -402,10 +398,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
     parser.add_argument("--variants", nargs="*", default=graph_variants())
-    parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
+    parser.add_argument("--folds", nargs="*", type=int, default=list(range(1)))
     parser.add_argument("--gnn", nargs="+", choices=GNN_TYPES, default=list(GNN_TYPES),
                         help="GNN architectures to run; defaults to all supported architectures.")
-    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--patience", type=int, default=16)
     parser.add_argument("--min-delta", type=float, default=1e-6)
     parser.add_argument("--hidden-dim", type=int, default=128)
@@ -458,6 +454,7 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
             variants_to_run = args.variants
             
         for variant in variants_to_run:
+            load_variant = "grid4" if variant == "none" else variant
             experiment_key = (embedding_model, variant, args.gnn, args.seed, args.hidden_dim,
                               args.num_layers, args.dropout, args.learning_rate, args.weight_decay)
             if experiment_key in completed:
@@ -466,9 +463,9 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
             fold_validation, fold_test, epochs = [], [], []
             dedicated_fold_results = []
             for fold in args.folds:
-                train = load_fold_records(root, embedding_model, fold, "train", variant)
-                validation = load_fold_records(root, embedding_model, fold, "val", variant)
-                test = load_fold_records(root, embedding_model, fold, "test", variant)
+                train = load_fold_records(root, embedding_model, fold, "train", load_variant)
+                validation = load_fold_records(root, embedding_model, fold, "val", load_variant)
+                test = load_fold_records(root, embedding_model, fold, "test", load_variant)
                 all_labels = [record["y"] for record in train + validation + test]
                 num_classes = max(all_labels) + 1
                 val_metrics, test_metrics, best_epoch = train_one_fold(
