@@ -25,8 +25,12 @@ def main():
     print("If you see pickling errors, inspect the Ray output for names/types of non-serializable objects captured in scope.")
     args = Namespace(
         config_path="config.yml",
-        # model_name="a9d7feb3402a4670bbcfa73f534acab7.pth",  # <-- the AE model basename to use
-        model_name="e6b29aa3b47145ec935e675a13c4b71d.pth",
+        # model_name="a9d7feb3402a4670bbcfa73f534acab7.pth",  # <-- the AE model basename to use 799
+        # model_name="ce4069521dfb4264a3ac8cc3d59971a2.pth", # 726
+        # model_name="e6b29aa3b47145ec935e675a13c4b71d.pth", # 804
+        model_name="c72210e208974529927e6c53d8ec890c.pth", # 805
+        # model_name="4175dac48c3b4e93b4c0c82e8d8b44ff.pth", # 806
+        # model_name="6d4c4f1198f0439583ffd3af0a76ef9f.pth", # 802
         num_samples=1000,
         max_concurrent=999,
         cpus_per_trial=8.0,
@@ -50,7 +54,7 @@ def main():
     with open(args.config_path) as file:
         config = yaml.load(file, Loader=yaml.FullLoader)
 
-    load = True
+    load = False
     if load:
         patch_train_df = '/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/dataframes_latents/patch_level_latents_train_df.pkl'
         patch_test_df = '/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/dataframes_latents/patch_level_latents_test_df.pkl'
@@ -149,11 +153,8 @@ def main():
         reduction_factor=2)
 
     reporter = CLIReporter(metric_columns=[
-        "val_bacc", "val_acc", "val_auc", "val_loss",
-        "best_val_bacc", "best_val_loss",
-        "test_bacc_from_best_val_bacc", "test_bacc_from_best_val_loss",
-        "test_acc_from_best_val_bacc", "test_acc_from_best_val_loss",
-        "test_auc_from_best_val_bacc", "test_auc_from_best_val_loss",
+        "val_bacc", "val_acc", "val_auc", "val_macro_f1",
+        "test_bacc", "test_acc", "test_auc", "test_macro_f1",
         "training_iteration"
     ])
 
@@ -170,7 +171,8 @@ def main():
     search_space_graph = {
         # GNN architecture choices
         # "gnn_type": tune.choice(["gcn", "gat", "gin", "graphsage", "transformer"]),
-        "gnn_type": tune.choice(["gat", "transformer"]),
+        # "gnn_type": tune.choice(["gat", "transformer"]),
+        "gnn_type": tune.choice(["gat"]),
         "gnn_hidden": tune.choice([64, 128, 256, 384, 512]),
         "gnn_layers": tune.choice([2, 3, 4, 5, 6, 7, 8]),
         "gnn_dropout": tune.choice([0.3, 0.4, 0.5, 0.6, 0.7, 0.75]),
@@ -179,6 +181,7 @@ def main():
 
         # Additional graph construction parameters
         "graph_type": tune.choice(["grid", "knn"]),
+        # "k_neighbors": tune.choice([1, 2, 3, 4, 5, 6, 7, 8]),
         "k_neighbors": tune.choice([4, 8, 12, 16]),
         'connect_diagonals': tune.choice([False, True]),
 
@@ -240,10 +243,19 @@ def main():
         check_pickle(v, f"tune_data['{k}']")
     check_pickle(train_fn, f"{train_fn.__name__} (function)")
 
+    # Use absolute path for Ray Tune storage to avoid pyarrow URI scheme errors
+    storage_path = os.path.join(os.getcwd(), "tune_mil_outputs", "ray_results")
+    os.makedirs(storage_path, exist_ok=True)
+
     analysis = tune.run(
-        tune.with_parameters(train_fn, data=tune_data, seed=args.seed, num_classes=int(config.get('num_classes', 7)),
-                             device_str=('cuda' if torch.cuda.is_available() else 'cpu'),
-                             patience=args.patience, max_epochs=args.num_epochs),
+        tune.with_parameters(
+            train_fn,
+            data=tune_data,
+            seed=args.seed,
+            num_classes=len(set(train_patient_labels)),
+            device_str=("cuda" if torch.cuda.is_available() else "cpu"),
+            patience=args.patience,
+            max_epochs=args.num_epochs),
         resources_per_trial=resources,
         config=search_space,
         num_samples=args.num_samples,
@@ -251,8 +263,8 @@ def main():
         progress_reporter=reporter,
         max_concurrent_trials=args.max_concurrent,
         fail_fast=False,
-        local_dir="tune_mil_outputs/ray_results",
-        name=f"ray_tune_{tune_type}_"+datetime.now().strftime("%y%m%d_%H%M%S"),
+        storage_path=storage_path,
+        name=f"ray_tune_{tune_type}_{args.model_name[:4]}" + datetime.now().strftime("%y%m%d_%H%M%S"),
         max_failures=args.max_failures,
     )
 
@@ -272,6 +284,7 @@ def main():
         yaml.dump(best_config, wf)
 
     print(f"Best trial: {best_trial}, results saved to {results_path}, best_config saved to {config_path}")
+    print(f"Model name: {args.model_name}")
     ray.shutdown()
 
 if __name__ == "__main__":
