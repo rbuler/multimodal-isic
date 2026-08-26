@@ -398,10 +398,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
     parser.add_argument("--variants", nargs="*", default=graph_variants())
-    parser.add_argument("--folds", nargs="*", type=int, default=list(range(1)))
+    parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
     parser.add_argument("--gnn", nargs="+", choices=GNN_TYPES, default=list(GNN_TYPES),
                         help="GNN architectures to run; defaults to all supported architectures.")
-    parser.add_argument("--epochs", type=int, default=1)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--patience", type=int, default=16)
     parser.add_argument("--min-delta", type=float, default=1e-6)
     parser.add_argument("--hidden-dim", type=int, default=128)
