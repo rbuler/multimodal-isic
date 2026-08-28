@@ -84,5 +84,3 @@ if missing:
     print("\n--- Brakujące wg ARCHITEKTUR GNN ---")
     print(missing_df.groupby("gnn").size().to_string())
 
-
-# TODO think of the need if we want to analyes 3 seeds
