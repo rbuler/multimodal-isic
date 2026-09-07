@@ -28,11 +28,11 @@ print("\n" + "=" * 45)
 print("  ANALIZA DUPLIKATÓW")
 print("=" * 45)
 if num_duplicates > 0:
-    print(f"⚠️ ZNALEZIONO DUPLIKATY! Nadmiarowe/zduplikowane wpisy: {num_duplicates}")
+    print(f"ZNALEZIONO DUPLIKATY! Nadmiarowe/zduplikowane wpisy: {num_duplicates}")
     dup_summary = df[df.duplicated(subset=KEY_COLS, keep=False)].groupby(KEY_COLS).size().reset_index(name='powtórzenia')
     print(dup_summary.to_string(index=False))
 else:
-    print("✅ Brak duplikatów – żaden worker nie przeliczył tego samego zadania.")
+    print("Brak duplikatów – żaden worker nie przeliczył tego samego zadania.")
 
 df = df.drop_duplicates(subset=KEY_COLS)
 
