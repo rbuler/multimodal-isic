@@ -164,16 +164,14 @@ class GraphMIL(nn.Module):
             probs: Class probabilities [num_classes]
             attention_weights: Attention weights [N, att_heads]
         """
-        # Input projection for residual
         if self.input_proj is not None:
             x_input = self.input_proj(x)
         else:
             x_input = x
         
         h = x_input
-        x_0 = x_input  # For GCNII
+        x_0 = x_input
 
-        # GNN layers with residual connections
         for i, layer in enumerate(self.gnn_layers):
             h_prev = h
 
@@ -186,19 +184,15 @@ class GraphMIL(nn.Module):
             else:
                 h = layer(h, edge_index)
             
-            # Layer normalization
             if self.use_layer_norm:
                 h = self.layer_norms[i](h)
             
-            # Activation and dropout
             h = F.relu(h)
             h = self.gnn_dropout(h)
             
-            # Residual connection
             if self.use_residual and h_prev.shape == h.shape:
                 h = h + h_prev
         
-        # Multi-head atention pooling
         attention_weights = []
         pooled_features = []
         
@@ -208,11 +202,9 @@ class GraphMIL(nn.Module):
             z = torch.sum(a * h, dim=0)  # [hidden]
             pooled_features.append(z)
         
-        # Aggregate multi-head outputs (mean pooling)
         z_agg = torch.stack(pooled_features, dim=0).mean(dim=0)
         attention_weights = torch.cat(attention_weights, dim=1)  # [N, att_heads]
         
-        # Classification
         logits = self.classifier(z_agg)
         probs = F.softmax(logits, dim=0)
         
@@ -397,7 +389,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
-    parser.add_argument("--variants", nargs="*", default=graph_variants())
+    parser.add_argument("--variants", type=str, choices=graph_variants(), default="grid4", help="Graph variant for this experiment.")
     parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
     parser.add_argument("--gnn", nargs="+", choices=GNN_TYPES, default=list(GNN_TYPES),
                         help="GNN architectures to run; defaults to all supported architectures.")
@@ -420,10 +412,6 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
     root, device = args.root.resolve(), torch.device(args.device)
     available_models = sorted(path.name for path in (root / "graph_outputs").iterdir() if path.is_dir())
     models = args.models or available_models
-
-    unknown = sorted(set(args.variants) - set(graph_variants()))
-    if unknown:
-        raise ValueError(f"Unsupported variants: {unknown}")
 
     output_dir = args.results_csv.parent if args.results_csv.is_absolute() else root / args.results_csv.parent
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -449,68 +437,68 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
             raise FileNotFoundError(f"No graph artifacts for embedding model {embedding_model}")
         
         if args.gnn.lower() == "mlp":
-            variants_to_run = ["none"]
+            variant = "none"
+            load_variant = "grid4" # NEED TO LOAD EMBEDDING DATA FROM SOME GRAPH, BUT MLP DOESN'T USE GRAPH STRUCTURE
         else:
-            variants_to_run = args.variants
+            variant = args.variants
+            load_variant = variant
             
-        for variant in variants_to_run:
-            load_variant = "grid4" if variant == "none" else variant
-            experiment_key = (embedding_model, variant, args.gnn, args.seed, args.hidden_dim,
-                              args.num_layers, args.dropout, args.learning_rate, args.weight_decay)
-            if experiment_key in completed:
-                print(f"Skipping completed experiment: {embedding_model} | {variant} | {args.gnn}")
-                continue
-            fold_validation, fold_test, epochs = [], [], []
-            dedicated_fold_results = []
-            for fold in args.folds:
-                train = load_fold_records(root, embedding_model, fold, "train", load_variant)
-                validation = load_fold_records(root, embedding_model, fold, "val", load_variant)
-                test = load_fold_records(root, embedding_model, fold, "test", load_variant)
-                all_labels = [record["y"] for record in train + validation + test]
-                num_classes = max(all_labels) + 1
-                val_metrics, test_metrics, best_epoch = train_one_fold(
-                    train, validation, test, args, fold, num_classes, train[0]["x"].shape[1], device
-                )
-                fold_validation.append(val_metrics)
-                fold_test.append(test_metrics)
-                epochs.append(best_epoch)
-                dedicated_fold_results.append({
-                    "embedding_model": embedding_model,
-                    "graph_variant": variant,
-                    "graph_model": args.gnn,
-                    "fold": fold,
-                    "seed": args.seed,
-                    "hidden_dim": args.hidden_dim,
-                    "num_layers": args.num_layers,
-                    "dropout": args.dropout,
-                    "best_epoch": best_epoch,
-                    **{f"test_{k}": v for k, v in test_metrics.items()},
-                    **{f"val_{k}": v for k, v in val_metrics.items()},
-                })
-                print(f"{embedding_model} | {variant} | fold {fold}: "
-                      f"val BAcc={val_metrics['bacc']:.4f}, test BAcc={test_metrics['bacc']:.4f}")
-            result = {
+        experiment_key = (embedding_model, variant, args.gnn, args.seed, args.hidden_dim,
+                            args.num_layers, args.dropout, args.learning_rate, args.weight_decay)
+        if experiment_key in completed:
+            print(f"Skipping completed experiment: {embedding_model} | {variant} | {args.gnn}")
+            continue
+        fold_validation, fold_test, epochs = [], [], []
+        dedicated_fold_results = []
+        for fold in args.folds:
+            train = load_fold_records(root, embedding_model, fold, "train", load_variant)
+            validation = load_fold_records(root, embedding_model, fold, "val", load_variant)
+            test = load_fold_records(root, embedding_model, fold, "test", load_variant)
+            all_labels = [record["y"] for record in train + validation + test]
+            num_classes = max(all_labels) + 1
+            val_metrics, test_metrics, best_epoch = train_one_fold(
+                train, validation, test, args, fold, num_classes, train[0]["x"].shape[1], device
+            )
+            fold_validation.append(val_metrics)
+            fold_test.append(test_metrics)
+            epochs.append(best_epoch)
+            dedicated_fold_results.append({
                 "embedding_model": embedding_model,
                 "graph_variant": variant,
                 "graph_model": args.gnn,
-                "num_folds": len(args.folds),
+                "fold": fold,
                 "seed": args.seed,
                 "hidden_dim": args.hidden_dim,
                 "num_layers": args.num_layers,
                 "dropout": args.dropout,
-                "learning_rate": args.learning_rate,
-                "weight_decay": args.weight_decay,
-                "best_epoch_mean": float(np.mean(epochs)),
-                "best_epoch_std": float(np.std(epochs, ddof=0)),
-                **aggregate(fold_validation, "val"),
-                **aggregate(fold_test, "test"),
-            }
-            results = pd.concat([results, pd.DataFrame([result])], ignore_index=True)
-            results = results.drop_duplicates(RESULT_KEY, keep="last")
-            save_results(results, output_path)
-            export_detailed_fold_results(dedicated_fold_results, detailed_csv_path)
-            completed.add(experiment_key)
-            print(f"Saved {len(results)} completed experiment rows to {output_path}")
+                "best_epoch": best_epoch,
+                **{f"test_{k}": v for k, v in test_metrics.items()},
+                **{f"val_{k}": v for k, v in val_metrics.items()},
+            })
+            print(f"{embedding_model} | {variant} | fold {fold}: "
+                    f"val BAcc={val_metrics['bacc']:.4f}, test BAcc={test_metrics['bacc']:.4f}")
+        result = {
+            "embedding_model": embedding_model,
+            "graph_variant": variant,
+            "graph_model": args.gnn,
+            "num_folds": len(args.folds),
+            "seed": args.seed,
+            "hidden_dim": args.hidden_dim,
+            "num_layers": args.num_layers,
+            "dropout": args.dropout,
+            "learning_rate": args.learning_rate,
+            "weight_decay": args.weight_decay,
+            "best_epoch_mean": float(np.mean(epochs)),
+            "best_epoch_std": float(np.std(epochs, ddof=0)),
+            **aggregate(fold_validation, "val"),
+            **aggregate(fold_test, "test"),
+        }
+        results = pd.concat([results, pd.DataFrame([result])], ignore_index=True)
+        results = results.drop_duplicates(RESULT_KEY, keep="last")
+        save_results(results, output_path)
+        export_detailed_fold_results(dedicated_fold_results, detailed_csv_path)
+        completed.add(experiment_key)
+        print(f"Saved {len(results)} completed experiment rows to {output_path}")
 
 
 def main() -> None:
