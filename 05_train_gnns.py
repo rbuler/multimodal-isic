@@ -389,7 +389,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent)
     parser.add_argument("--models", nargs="*", help="Embedding checkpoint basenames; defaults to all graph outputs.")
-    parser.add_argument("--variants", type=str, choices=graph_variants(), default="grid4", help="Graph variant for this experiment.")
+    parser.add_argument("--variants", type=str, choices=["none"] + graph_variants(), default="grid4", help="Graph variant for this experiment.")
     parser.add_argument("--folds", nargs="*", type=int, default=list(range(5)))
     parser.add_argument("--gnn", nargs="+", choices=GNN_TYPES, default=list(GNN_TYPES),
                         help="GNN architectures to run; defaults to all supported architectures.")
@@ -438,7 +438,7 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
         
         if args.gnn.lower() == "mlp":
             variant = "none"
-            load_variant = "grid4" # NEED TO LOAD EMBEDDING DATA FROM SOME GRAPH, BUT MLP DOESN'T USE GRAPH STRUCTURE
+            load_variant = "grid4" # NEED TO LOAD EMBEDDING DATA FROM SOME GRAPH, BUT MLP DOESN'T USE GRAPH STRUCTURE!!!
         else:
             variant = args.variants
             load_variant = variant
