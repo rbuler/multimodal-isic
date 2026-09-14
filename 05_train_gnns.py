@@ -99,6 +99,7 @@ class GraphMIL(nn.Module):
             elif self.gnn_type == 'gatv2':
                 layer = pyg_nn.GATv2Conv(in_dim, out_dim, heads=self.gnn_heads,
                                        concat=self.gnn_concat, dropout=gnn_dropout)
+                out_dim *= self.gnn_heads if self.gnn_concat else 1
             elif self.gnn_type == 'fagcn':
                 if in_dim != out_dim:
                     raise ValueError("FAGCN requires a constant hidden dimension")
@@ -433,6 +434,13 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
         results = pd.DataFrame()
 
     for embedding_model in models:
+
+        # temp hard-coded model selection (based on average validation performance of previous runs)
+        # if embedding_model not in ["ce4069521dfb4264a3ac8cc3d59971a2", "a9d7feb3402a4670bbcfa73f534acab7"]:
+        #     print(f"Skipping embedding model {embedding_model} (not in selected models)")
+        #     continue
+
+
         if embedding_model not in available_models:
             raise FileNotFoundError(f"No graph artifacts for embedding model {embedding_model}")
         
