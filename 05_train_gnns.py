@@ -309,13 +309,13 @@ def train_one_fold(train_records: List[Dict], val_records: List[Dict], test_reco
                     
                     gnn_heads=4,
                     gnn_concat=True,
-                    att_dim=128,
+                    att_dim=256,
                     att_heads=4,
-                    pool_dropout=0.2,
-                    classifier_dim=128,
-                    classifier_light=True,
+                    pool_dropout=0.5,
+                    classifier_dim=384,
+                    classifier_light=False,
                     num_classes=num_classes,
-                    use_residual=True,
+                    use_residual=False,
                     use_layer_norm=True).to(device)
 
     counts = Counter(record["y"] for record in train_records)
@@ -436,9 +436,9 @@ def run_gnn_experiments(args: argparse.Namespace) -> None:
     for embedding_model in models:
 
         # temp hard-coded model selection (based on average validation performance of previous runs)
-        # if embedding_model not in ["ce4069521dfb4264a3ac8cc3d59971a2", "a9d7feb3402a4670bbcfa73f534acab7"]:
-        #     print(f"Skipping embedding model {embedding_model} (not in selected models)")
-        #     continue
+        if embedding_model not in ["ce4069521dfb4264a3ac8cc3d59971a2", "a9d7feb3402a4670bbcfa73f534acab7"]:
+            print(f"Skipping embedding model {embedding_model} (not in selected models)")
+            continue
 
 
         if embedding_model not in available_models:

@@ -19,6 +19,10 @@ else:
     df = pd.concat([pd.read_csv(f) for f in csv_files], ignore_index=True)
 
     embedding_models = sorted(df["embedding_model"].dropna().unique())
+
+    # hard-coded embedding models (based on average validation performance of previous runs)
+    embedding_models = ['ce4069521dfb4264a3ac8cc3d59971a2', 'a9d7feb3402a4670bbcfa73f534acab7']
+
     print(f"Wykryto {len(embedding_models)} modeli embeddingowych: {embedding_models}")
 
     KEY_COLS = ["embedding_model", "graph_variant", "graph_model", "num_layers", "seed", "hidden_dim", "dropout"]
