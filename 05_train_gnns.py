@@ -25,6 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
+from torch.utils.data import WeightedRandomSampler
 from torch_geometric import nn as pyg_nn
 import yaml
 from utils import get_args_parser
@@ -300,55 +301,97 @@ def train_one_fold(train_records: List[Dict], val_records: List[Dict], test_reco
                    input_dim: int, device: torch.device) -> Tuple[Dict, Dict, int]:
     set_seed(args.seed + fold)
 
-    model = GraphMIL(input_dim=input_dim,
-                    gnn_type=args.gnn if isinstance(args.gnn, str) else args.gnn[0],
-                    
-                    gnn_hidden=args.hidden_dim,   # z CLI: --hidden-dim
-                    gnn_layers=args.num_layers,   # z CLI: --num-layers
-                    gnn_dropout=args.dropout,     # z CLI: --dropout
-                    
-                    gnn_heads=4,
-                    gnn_concat=True,
-                    att_dim=256,
-                    att_heads=4,
-                    pool_dropout=0.5,
-                    classifier_dim=384,
-                    classifier_light=False,
-                    num_classes=num_classes,
-                    use_residual=False,
-                    use_layer_norm=True).to(device)
+    model = GraphMIL(
+        input_dim=input_dim,
+        gnn_type=args.gnn if isinstance(args.gnn, str) else args.gnn[0],
 
-    counts = Counter(record["y"] for record in train_records)
-    weights = torch.tensor([len(train_records) / (num_classes * counts.get(c, 1))
-                            for c in range(num_classes)], dtype=torch.float32, device=device)
-    criterion = nn.CrossEntropyLoss(weight=weights)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.learning_rate,
-                                  weight_decay=args.weight_decay)
-    best_state, best_bacc, no_improvement, best_epoch = None, -np.inf, 0, 0
+        gnn_hidden=args.hidden_dim,
+        gnn_layers=args.num_layers,
+        gnn_dropout=args.dropout,
+
+        gnn_heads=4,
+        gnn_concat=True,
+        att_dim=256,
+        att_heads=4,
+        pool_dropout=0.5,
+        classifier_dim=384,
+        classifier_light=False,
+        num_classes=num_classes,
+        use_residual=False,
+        use_layer_norm=True
+    ).to(device)
+
+    labels = np.array([record["y"] for record in train_records])
+    class_counts = Counter(labels)
+
+    sample_weights = np.array(
+        [1.0 / class_counts[int(label)] for label in labels],
+        dtype=np.float64
+    )
+
+    sampler = WeightedRandomSampler(
+        weights=torch.from_numpy(sample_weights),
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+    criterion = nn.CrossEntropyLoss()
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=args.learning_rate,
+        weight_decay=args.weight_decay
+    )
+
+    best_state, best_loss, no_improvement, best_epoch = None, np.inf, 0, 0
 
     for epoch in range(1, args.epochs + 1):
         model.train()
-        order = np.random.permutation(len(train_records))
-        for index in order:
+
+        for index in sampler:
             record = train_records[int(index)]
+
             optimizer.zero_grad()
-            probs, _ = model(torch.from_numpy(record["x"]).to(device),
-                           torch.from_numpy(record["edge_index"]).to(device))
-            loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), torch.tensor([record["y"]], device=device))
+
+            probs, _ = model(
+                torch.from_numpy(record["x"]).to(device),
+                torch.from_numpy(record["edge_index"]).to(device)
+            )
+
+            loss = criterion(
+                torch.log(probs + 1e-9).unsqueeze(0),
+                torch.tensor([record["y"]], device=device)
+            )
+
             loss.backward()
             optimizer.step()
-        val_metrics = evaluate(model, val_records, criterion, device, num_classes)
-        if val_metrics["bacc"] > best_bacc + args.min_delta:
-            best_bacc, no_improvement, best_epoch = val_metrics["bacc"], 0, epoch
+
+        val_metrics = evaluate(
+            model,
+            val_records,
+            criterion,
+            device,
+            num_classes
+        )
+
+
+        if val_metrics["loss"] < best_loss - args.min_delta:
+            best_loss = val_metrics["loss"]
+            no_improvement = 0
+            best_epoch = epoch
             best_state = copy.deepcopy(model.state_dict())
         else:
             no_improvement += 1
+
         if no_improvement >= args.patience:
             break
 
     model.load_state_dict(best_state)
-    return (evaluate(model, val_records, criterion, device, num_classes),
-            evaluate(model, test_records, criterion, device, num_classes), best_epoch)
+
+    return (
+        evaluate(model, val_records, criterion, device, num_classes),
+        evaluate(model, test_records, criterion, device, num_classes),
+        best_epoch)
 
 
 def aggregate(metric_rows: List[Dict], prefix: str) -> Dict[str, float]:
@@ -400,8 +443,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--hidden-dim", type=int, default=128)
     parser.add_argument("--num-layers", type=int, default=2)
     parser.add_argument("--dropout", type=float, default=0.5)
-    parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--learning-rate", type=float, default=3e-5)
+    parser.add_argument("--weight-decay", type=float, default=1e-6)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--results-csv", type=Path, default=Path("gnn_results/common_results.csv"))
