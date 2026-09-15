@@ -9,7 +9,6 @@ from scipy import stats
 def merge_worker_results(results_dir: str = "results") -> None:
     results_path = Path(results_dir)
     
-    # 1. Scalanie podsumowania (Summary)
     summary_files = glob.glob(str(results_path / "results_job_*.csv"))
     if summary_files:
         df_summary = pd.concat([pd.read_csv(f) for f in summary_files], ignore_index=True)
@@ -23,7 +22,6 @@ def merge_worker_results(results_dir: str = "results") -> None:
         df_summary.sort_values(summary_keys).to_csv(output_summary, index=False)
         print(f"[SUMMARY] Scalono {len(summary_files)} plików do {output_summary} (Łącznie: {len(df_summary)} eksperymentów)")
 
-    # 2. Scalanie wyników foldów (Detailed)
     detailed_files = glob.glob(str(results_path / "detailed_fold_results_job_*.csv"))
     if detailed_files:
         df_detailed = pd.concat([pd.read_csv(f) for f in detailed_files], ignore_index=True)
@@ -37,121 +35,495 @@ def merge_worker_results(results_dir: str = "results") -> None:
         df_detailed.sort_values(detailed_keys).to_csv(output_detailed, index=False)
         print(f"[DETAILED] Scalono {len(detailed_files)} plików foldów do {output_detailed} (Łącznie: {len(df_detailed)} wierszy)")
 
-def generate_plots_and_stats(results_dir: str = "results", target_metric: str = "val_auc") -> None:
+
+from matplotlib.lines import Line2D
+
+
+def generate_plots(
+    results_dir: str = "results",
+    target_metric: str = "test_bacc_mean",
+    whiskers: bool = True
+) -> None:
+
     results_path = Path(results_dir)
     master_summary_path = results_path / "master_results.csv"
 
     if not master_summary_path.exists():
-        print("[ERROR] Brak pliku master_results.csv. Najpierw scal wyniki.")
+        print("[ERROR] Brak pliku master_results.csv.")
         return
 
     df = pd.read_csv(master_summary_path)
 
-    # Autodetekcja metryki, jeśli podana nie istnieje w pliku
     if target_metric not in df.columns:
-        possible = [m for m in ["val_auc", "test_auc", "auc", "val_f1", "val_loss"] if m in df.columns]
-        if possible:
-            target_metric = possible[0]
-        else:
-            numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-            target_metric = numeric_cols[-1] if numeric_cols else None
-
-    if not target_metric or target_metric not in df.columns:
-        print("[ERROR] Nie znaleziono odpowiedniej metryki numerycznej do analizy.")
+        print(f"[ERROR] Brak kolumny '{target_metric}'.")
         return
 
-    plots_dir = results_path / "plots_and_stats"
-    plots_dir.mkdir(exist_ok=True)
-    
-    sns.set_theme(style="whitegrid", palette="muted")
-    print(f"\n=== Generowanie wykresów i statystyk dla metryki: {target_metric} ===")
+    # =========================================================
+    # Ustawienia eksperymentu
+    # =========================================================
 
-    # --- WYKRES 1: Boxplot porównujący architektury GNN ---
-    plt.figure(figsize=(10, 6))
-    order = df.groupby("graph_model")[target_metric].mean().sort_values(ascending=False).index
-    sns.boxplot(data=df, x="graph_model", y=target_metric, order=order, palette="Set2")
-    sns.stripplot(data=df, x="graph_model", y=target_metric, order=order, color="black", alpha=0.3, jitter=0.2)
-    plt.title(f"Rozkład {target_metric} wg architektury GNN", fontsize=14, fontweight='bold')
-    plt.xlabel("Model GNN")
-    plt.ylabel(target_metric)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(plots_dir / f"boxplot_models_{target_metric}.png", dpi=300)
-    plt.close()
+    VARIANTS_ORDER = (
+        ["grid4", "grid8"]
+        + [f"knn{k}" for k in [1, 2, 3, 4, 5, 6, 7, 8, 12, 16]]
+        + [f"random{r}" for r in [1, 2, 3, 4, 5, 6, 7, 8, 12, 16]]
+    )
 
-    # --- WYKRES 2: Heatmapa wpływu hiperparametrów (Hidden Dim vs Dropout) ---
-    if "hidden_dim" in df.columns and "dropout" in df.columns:
-        plt.figure(figsize=(8, 6))
-        pivot_df = df.pivot_table(values=target_metric, index="hidden_dim", columns="dropout", aggfunc="mean")
-        sns.heatmap(pivot_df, annot=True, fmt=".4f", cmap="YlGnBu")
-        plt.title(f"Średnia {target_metric} (Hidden Dim vs Dropout)", fontsize=12, fontweight='bold')
-        plt.tight_layout()
-        plt.savefig(plots_dir / f"heatmap_hyperparams_{target_metric}.png", dpi=300)
-        plt.close()
+    MODELS = [
+        "mlp",
+        "gcn",
+        "gat",
+        "gatv2",
+        "gin",
+        "graphsage",
+        "transformer",
+        "fagcn",
+        "gcnii",
+    ]
 
-    # --- WYKRES 3: Średnie z odchyleniem standardowym ---
-    plt.figure(figsize=(10, 6))
-    sns.barplot(data=df, x="graph_model", y=target_metric, order=order, capsize=0.1, err_kws={'linewidth': 1.5})
-    plt.title(f"Średnia wartość {target_metric} (± Standard Error)", fontsize=14, fontweight='bold')
-    plt.xlabel("Model GNN")
-    plt.ylabel(target_metric)
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    plt.savefig(plots_dir / f"barplot_means_{target_metric}.png", dpi=300)
-    plt.close()
+    LAYERS = [1, 2, 3, 4, 5]
 
-    # --- TESTY STATYSTYCZNE ---
-    groups = [group[target_metric].dropna().values for _, group in df.groupby("graph_model")]
-    model_names = [name for name, _ in df.groupby("graph_model")]
+    # =========================================================
+    # Kolumna STD
+    # =========================================================
 
-    if len(groups) > 1:
-        # 1. Test Kruskala-Wallisa (Nieparametryczna ANOVA)
-        kw_stat, kw_p = stats.kruskal(*groups)
-        
-        # Wyznaczenie najlepszego modelu
-        mean_scores = df.groupby("graph_model")[target_metric].mean().sort_values(ascending=False)
-        best_model = mean_scores.index[0]
-        best_scores = df[df["graph_model"] == best_model][target_metric]
+    std_metric = target_metric.replace("_mean", "_std")
 
-        # 2. Porównania parami z najlepszym modelem (Mann-Whitney U Test)
-        stat_results = []
-        for model in model_names:
-            if model == best_model:
-                continue
-            comp_scores = df[df["graph_model"] == model][target_metric]
-            u_stat, p_val = stats.mannwhitneyu(best_scores, comp_scores, alternative='greater')
-            
-            stat_results.append({
-                "Best_Model": best_model,
-                "Compared_Model": model,
-                "Best_Mean": round(best_scores.mean(), 5),
-                "Comp_Mean": round(comp_scores.mean(), 5),
-                "Diff": round(best_scores.mean() - comp_scores.mean(), 5),
-                "U_Stat": u_stat,
-                "p_value": round(p_val, 6),
-                "Significant_alpha_0.05": p_val < 0.05
-            })
+    if whiskers and std_metric not in df.columns:
+        print(
+            f"[WARNING] Brak kolumny '{std_metric}'. "
+            "Whiskery zostaną wyłączone."
+        )
+        whiskers = False
 
-        df_stats = pd.DataFrame(stat_results).sort_values("p_value")
-        df_stats.to_csv(plots_dir / "statistical_tests_results.csv", index=False)
+    # =========================================================
+    # Przygotowanie danych
+    # =========================================================
 
-        # Zapis podsumowania tekstowego
-        with open(plots_dir / "stats_summary.txt", "w") as f:
-            f.write(f"=== TESTY STATYSTYCZNE DLA METRYKI: {target_metric} ===\n\n")
-            f.write(f"1. Test Kruskala-Wallisa (czy architektura ma znaczenie?):\n")
-            f.write(f"   H-Statistic: {kw_stat:.4f}, p-value: {kw_p:.4e}\n")
-            f.write(f"   Wniosek: {'Różnice są istotne statystycznie (p < 0.05)' if kw_p < 0.05 else 'Brak istotnych różnic między modelami'}\n\n")
-            f.write(f"2. Najlepszy model pod względem średniej: {best_model} ({mean_scores.iloc[0]:.4f})\n\n")
-            f.write("3. Testy Mann-Whitneya U (czy najlepszy model jest istotnie lepszy od pozostałych):\n")
-            f.write(df_stats.to_string(index=False))
+    df = df.copy()
 
-        print(f"[STATS] Wyniki testów zapisano w: {plots_dir / 'stats_summary.txt'}")
-        print(f"[PLOTS] Wykresy zapisano w katalogu: {plots_dir}")
+    df["num_layers"] = pd.to_numeric(
+        df["num_layers"],
+        errors="coerce"
+    )
+
+    df[target_metric] = pd.to_numeric(
+        df[target_metric],
+        errors="coerce"
+    )
+
+    if std_metric in df.columns:
+        df[std_metric] = pd.to_numeric(
+            df[std_metric],
+            errors="coerce"
+        )
+
+    df = df.dropna(
+        subset=[
+            "graph_model",
+            "graph_variant",
+            "num_layers",
+            target_metric
+        ]
+    )
+
+    # MLP ma graph_variant == "none",
+    # dlatego filtrujemy osobno.
+    df = df[
+        (
+            (df["graph_model"] == "mlp")
+            & (df["graph_variant"] == "none")
+            & df["num_layers"].isin(LAYERS)
+        )
+        |
+        (
+            (df["graph_model"] != "mlp")
+            & df["graph_variant"].isin(VARIANTS_ORDER)
+            & df["num_layers"].isin(LAYERS)
+        )
+    ]
+
+    df = df[
+        df["graph_model"].isin(MODELS)
+    ]
+
+    if df.empty:
+        print("[ERROR] Brak danych do narysowania.")
+        return
+
+    # =========================================================
+    # Styl publikacyjny
+    # =========================================================
+
+    plt.rcParams["font.family"] = "DejaVu Sans"
+    plt.rcParams["font.size"] = 10
+
+    sns.set_theme(
+        style="ticks",
+        palette="colorblind"
+    )
+
+    # =========================================================
+    # Figure
+    # =========================================================
+
+    fig, axes = plt.subplots(
+        3,
+        3,
+        figsize=(16, 11),
+        sharex=True,
+        sharey=True
+    )
+
+    axes = axes.flatten()
+
+    layer_colors = sns.color_palette(
+        "viridis",
+        len(LAYERS)
+    )
+
+    # =========================================================
+    # Rysowanie
+    # =========================================================
+
+    for i, model in enumerate(MODELS):
+
+        ax = axes[i]
+
+        model_df = df[
+            df["graph_model"] == model
+        ]
+
+        # =====================================================
+        # MLP — brak struktury grafowej
+        # =====================================================
+
+        if model == "mlp":
+
+            for layer_idx, layer in enumerate(LAYERS):
+
+                layer_data = model_df[
+                    (model_df["graph_variant"] == "none")
+                    & (model_df["num_layers"] == layer)
+                ]
+
+                if layer_data.empty:
+                    continue
+
+                # Jeśli istnieją duplikaty, bierzemy średnią.
+                y = layer_data[target_metric].mean()
+
+                # -------------------------------------------------
+                # Bez whiskerów
+                # -------------------------------------------------
+
+                if not whiskers:
+
+                    ax.axhline(
+                        y,
+                        color=layer_colors[layer_idx],
+                        linestyle="-",
+                        linewidth=1.5,
+                        alpha=0.7
+                    )
+
+
+                # -------------------------------------------------
+                # Z whiskerem
+                # -------------------------------------------------
+
+                else:
+
+                    if std_metric in layer_data.columns:
+                        std = layer_data[std_metric].mean()
+
+
+                        ax.axhline(
+                            y,
+                            color=layer_colors[layer_idx],
+                            linestyle="-",
+                            linewidth=1.5,
+                            alpha=0.7
+                        )
+
+            ax.text(
+                0.5,
+                0.08,
+                "No graph structure!",
+                transform=ax.transAxes,
+                ha="center",
+                va="center",
+                fontsize=10,
+                style="italic"
+            )
+
+        # =====================================================
+        # Pozostałe GNN
+        # =====================================================
+
+        else:
+
+            for layer_idx, layer in enumerate(LAYERS):
+
+                layer_data = model_df[
+                    model_df["num_layers"] == layer
+                ]
+
+                for family_prefix in [
+                    "grid",
+                    "knn",
+                    "random"
+                ]:
+
+                    family_variants = [
+                        v
+                        for v in VARIANTS_ORDER
+                        if v.startswith(family_prefix)
+                    ]
+
+                    fam_data = layer_data[
+                        layer_data["graph_variant"].str.startswith(
+                            family_prefix
+                        )
+                    ]
+
+                    if fam_data.empty:
+                        continue
+
+                    fam_data = (
+                        fam_data
+                        .groupby(
+                            "graph_variant",
+                            as_index=True
+                        )
+                        .agg(
+                            mean=(target_metric, "mean"),
+                            std=(
+                                std_metric,
+                                "mean"
+                            )
+                            if std_metric in fam_data.columns
+                            else (
+                                target_metric,
+                                "std"
+                            )
+                        )
+                        .reindex(family_variants)
+                    )
+
+                    fam_data = fam_data.dropna(
+                        subset=["mean"]
+                    )
+
+                    if fam_data.empty:
+                        continue
+
+                    x = [
+                        VARIANTS_ORDER.index(v)
+                        for v in fam_data.index
+                    ]
+
+                    y = fam_data["mean"].values
+
+                    # -------------------------------------------------
+                    # Bez whiskerów
+                    # -------------------------------------------------
+
+                    if not whiskers:
+
+                        ax.plot(
+                            x,
+                            y,
+                            marker="o",
+                            markersize=4,
+                            linewidth=1.5,
+                            alpha=0.7,
+                            color=layer_colors[layer_idx],
+                        )
+
+                    # -------------------------------------------------
+                    # Z whiskerami
+                    # -------------------------------------------------
+
+                    else:
+
+                        yerr = fam_data["std"].values
+
+                        ax.errorbar(
+                            x,
+                            y,
+                            yerr=yerr,
+                            fmt="-o",
+                            markersize=4,
+                            linewidth=1.5,
+                            alpha=0.7,
+                            elinewidth=1.0,
+                            capsize=3,
+                            capthick=1.0,
+                            color=layer_colors[layer_idx],
+                        )
+
+        # =====================================================
+        # Granice rodzin grafów
+        # =====================================================
+
+        ax.axvline(
+            1.5,
+            color="gray",
+            linestyle="--",
+            linewidth=0.9,
+            alpha=0.6
+        )
+
+        ax.axvline(
+            11.5,
+            color="gray",
+            linestyle="--",
+            linewidth=0.9,
+            alpha=0.6
+        )
+
+        ax.axvspan(
+            1.5,
+            11.5,
+            color="gray",
+            alpha=0.05
+        )
+
+        # =====================================================
+        # Panel title
+        # =====================================================
+
+        ax.set_title(
+            model.upper(),
+            fontsize=12,
+            fontweight="bold",
+            pad=8
+        )
+
+        ax.grid(
+            True,
+            linestyle=":",
+            linewidth=0.7,
+            alpha=0.6
+        )
+
+        ax.tick_params(
+            axis="both",
+            which="major",
+            labelsize=9
+        )
+
+        sns.despine(
+            ax=ax,
+            top=True,
+            right=True
+        )
+
+    # =========================================================
+    # X axis
+    # =========================================================
+
+    for ax in axes:
+
+        ax.set_xticks(
+            range(len(VARIANTS_ORDER))
+        )
+
+        ax.set_xticklabels(
+            VARIANTS_ORDER,
+            rotation=90,
+            fontsize=8
+        )
+
+    # =========================================================
+    # Y axis
+    # =========================================================
+
+    fig.supxlabel(
+        "Graph Variant (Grid | kNN | Random)",
+        fontsize=13,
+        fontweight="bold",
+        y=0.02
+    )
+
+    fig.supylabel(
+        "Balanced Test Accuracy",
+        fontsize=13,
+        fontweight="bold",
+        x=0.02
+    )
+
+    # =========================================================
+    # Własna legenda dla warstw
+    # =========================================================
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            color=layer_colors[i],
+            marker="o",
+            linestyle="-",
+            linewidth=1.5,
+            markersize=5,
+            label=str(layer)
+        )
+        for i, layer in enumerate(LAYERS)
+    ]
+
+    fig.legend(
+        handles=legend_handles,
+        title="Layers",
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.985),
+        ncol=len(LAYERS),
+        frameon=True,
+        fontsize=10,
+        title_fontsize=10,
+        handlelength=2.0,
+        columnspacing=1.5
+    )
+
+    # =========================================================
+    # Layout
+    # =========================================================
+
+    fig.subplots_adjust(
+        left=0.075,
+        right=0.99,
+        bottom=0.18,
+        top=0.90,
+        wspace=0.08,
+        hspace=0.28
+    )
+
+    # =========================================================
+    # Save
+    # =========================================================
+
+    output_path = (
+        results_path
+        / "_gnn_variants_layers_benchmark.pdf"
+    )
+
+    fig.savefig(
+        output_path,
+        dpi=600,
+        bbox_inches="tight"
+    )
+
+    plt.show()
+    plt.close(fig)
+
+    print(f"[PLOT] Zapisano: {output_path}")
+
+    # %%
+# %%
 
 def main():
     RESULTS_DIR = "/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/gnn_results"
-    merge_worker_results(results_dir=RESULTS_DIR)
-    generate_plots_and_stats(results_dir=RESULTS_DIR, target_metric="test_bacc")
+    # merge_worker_results(results_dir=RESULTS_DIR)
+    generate_plots(results_dir=RESULTS_DIR, target_metric="test_bacc_mean", whiskers=False)
 
 if __name__ == "__main__":
     main()
