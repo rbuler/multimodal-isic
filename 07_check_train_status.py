@@ -9,7 +9,7 @@ GRAPH_VARIANTS = ["grid4", "grid8"] + [f"knn{k}" for k in DEFAULT_NEIGHBORS] + [
 GNN_MODELS = ["mlp", "gcn", "gat", "gatv2", "gin", "graphsage", "transformer", "fagcn", "gcnii"]
 SEEDS = [42]
 HIDDEN_DIMS = [256]
-DROPOUTS = [0.50]
+DROPOUTS = [0.60]
 LAYERS = [1, 2, 3, 4, 5]
 
 csv_files = list(RESULTS_DIR.glob("results*.csv"))
