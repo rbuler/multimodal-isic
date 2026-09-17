@@ -21,6 +21,7 @@ else:
     embedding_models = sorted(df["embedding_model"].dropna().unique())
 
     # hard-coded embedding models (based on average validation performance of previous runs)
+    # TODO for more fair comparison, we ll add more seeds and hidden dimensions in the future
     embedding_models = ['ce4069521dfb4264a3ac8cc3d59971a2', 'a9d7feb3402a4670bbcfa73f534acab7']
 
     print(f"Wykryto {len(embedding_models)} modeli embeddingowych: {embedding_models}")
