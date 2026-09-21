@@ -181,7 +181,9 @@ class GraphMIL(nn.Module):
                 h = layer(h)
             elif self.gnn_type == 'gcnii':
                 h = layer(h, x_0, edge_index, edge_weight)
-            elif self.gnn_type in {'gcn', 'fagcn'}:
+            elif self.gnn_type == 'fagcn':
+                h = layer(h, x_0, edge_index, edge_weight)
+            elif self.gnn_type == 'gcn':
                 h = layer(h, edge_index, edge_weight)
             else:
                 h = layer(h, edge_index)
