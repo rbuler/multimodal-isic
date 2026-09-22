@@ -1,33 +1,22 @@
-"""Cross-validated graph classification from saved patch embeddings.
-
-Input artifacts are produced by 01--03:
-  patch_stats/<embedding_model>/patch_stats_fold_<fold>_<split>.pkl
-  graph_outputs/<embedding_model>/graph_dataset.pkl
-
-Each result row is one embedding-model / graph-variant / graph-model
-experiment, aggregated over the five saved folds.  The external test split is
-evaluated once with each fold's validation-selected checkpoint.
-"""
-
-import argparse
-import copy
 import os
+import yaml
+import copy
 import pickle
 import random
+import argparse
 from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
+import torch
 import numpy as np
 import pandas as pd
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import accuracy_score, balanced_accuracy_score
 from sklearn.metrics import precision_recall_fscore_support, roc_auc_score
 from torch.utils.data import WeightedRandomSampler
 from torch_geometric import nn as pyg_nn
-import yaml
 from utils import get_args_parser
 
 DEFAULT_NEIGHBORS = tuple(range(1, 9)) + (12, 16)
