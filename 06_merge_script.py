@@ -5,6 +5,7 @@ import seaborn as sns
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
 # %%
 
 def merge_worker_results(results_dir: str = "results") -> None:
@@ -39,6 +40,7 @@ def generate_plots(
     whiskers: bool = True,
     embedding_mode: str = "average",
     embedding_model: str = None,
+    plot_style: str = "layers",
 ) -> None:
 
     results_path = Path(results_dir)
@@ -52,6 +54,8 @@ def generate_plots(
 
     if embedding_mode not in {"average", "per_model"}:
         raise ValueError("embedding_mode must be 'average' or 'per_model'")
+    if plot_style not in {"layers", "summary"}:
+        raise ValueError("plot_style must be 'layers' or 'summary'")
 
     if "embedding_model" not in df.columns:
         print("[ERROR] Brak kolumny 'embedding_model'.")
@@ -69,6 +73,7 @@ def generate_plots(
                 whiskers=whiskers,
                 embedding_mode="per_model",
                 embedding_model=str(model_name),
+                plot_style=plot_style,
             )
         return
 
@@ -91,13 +96,13 @@ def generate_plots(
     MODELS = [
         "mlp",
         "gcn",
+        "gcnii",
         "gat",
         "gatv2",
+        "transformer",
         "gin",
         "graphsage",
-        "transformer",
         "fagcn",
-        "gcnii",
     ]
 
     LAYERS = [1, 2, 3, 4, 5]
@@ -158,7 +163,75 @@ def generate_plots(
         ax = axes[i]
         model_df = df[df["graph_model"] == model]
 
-        if model == "mlp":
+        if plot_style == "summary":
+            if model == "mlp":
+                summary_values = model_df[target_metric].dropna()
+                if not summary_values.empty:
+                    mean_value = summary_values.mean()
+                    min_value = summary_values.min()
+                    max_value = summary_values.max()
+                    ax.axhspan(min_value, max_value, color="tab:blue", alpha=0.18)
+                    ax.axhline(mean_value, color="tab:blue", linewidth=2.0)
+                    ax.text(
+                        0.5,
+                        0.08,
+                        f"mean={mean_value:.3f}\nrange={min_value:.3f}-{max_value:.3f}",
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="center",
+                        fontsize=9,
+                    )
+                ax.text(
+                    0.5,
+                    0.92,
+                    "No graph structure",
+                    transform=ax.transAxes,
+                    ha="center",
+                    va="center",
+                    fontsize=10,
+                    style="italic",
+                )
+            else:
+                for family_prefix, family_color in zip(
+                    ["grid", "knn", "random"],
+                    ["tab:blue", "tab:orange", "tab:green"],
+                ):
+                    family_variants = [
+                        v for v in VARIANTS_ORDER if v.startswith(family_prefix)
+                    ]
+                    family_data = model_df[
+                        model_df["graph_variant"].str.startswith(family_prefix)
+                    ]
+                    if family_data.empty:
+                        continue
+
+                    summary_data = (
+                        family_data.groupby("graph_variant")[target_metric]
+                        .agg(mean="mean", minimum="min", maximum="max")
+                        .reindex(family_variants)
+                        .dropna(subset=["mean"])
+                    )
+                    if summary_data.empty:
+                        continue
+
+                    x = [VARIANTS_ORDER.index(v) for v in summary_data.index]
+                    ax.plot(
+                        x,
+                        summary_data["mean"].values,
+                        marker="o",
+                        markersize=4,
+                        linewidth=1.8,
+                        color=family_color,
+                    )
+                    ax.fill_between(
+                        x,
+                        summary_data["minimum"].values,
+                        summary_data["maximum"].values,
+                        color=family_color,
+                        alpha=0.18,
+                    )
+
+        elif model == "mlp":
             for layer_idx, layer in enumerate(LAYERS):
                 layer_data = model_df[
                     (model_df["graph_variant"] == "none")
@@ -348,23 +421,34 @@ def generate_plots(
         x=0.02
     )
 
-    legend_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=layer_colors[i],
-            marker="o",
-            linestyle="-",
-            linewidth=1.5,
-            markersize=5,
-            label=str(layer)
-        )
-        for i, layer in enumerate(LAYERS)
-    ]
+    if plot_style == "summary":
+        legend_handles = [
+            Line2D([0], [0], color="black", linewidth=1.8, label="Mean across layers"),
+            Patch(facecolor="gray", alpha=0.22, label="Min-max across layers"),
+            Line2D([0], [0], color="tab:blue", linewidth=1.8, label="Grid"),
+            Line2D([0], [0], color="tab:orange", linewidth=1.8, label="kNN"),
+            Line2D([0], [0], color="tab:green", linewidth=1.8, label="Random"),
+        ]
+        legend_title = "Summary"
+    else:
+        legend_handles = [
+            Line2D(
+                [0],
+                [0],
+                color=layer_colors[i],
+                marker="o",
+                linestyle="-",
+                linewidth=1.5,
+                markersize=5,
+                label=str(layer)
+            )
+            for i, layer in enumerate(LAYERS)
+        ]
+        legend_title = "Layers"
 
     fig.legend(
         handles=legend_handles,
-        title="Layers",
+        title=legend_title,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.985),
         ncol=len(LAYERS),
@@ -385,10 +469,10 @@ def generate_plots(
     )
 
     if embedding_mode == "average":
-        output_name = "_gnn_variants_layers_benchmark.png"
+        output_name = f"_gnn_variants_layers_benchmark_{plot_style}.png"
     else:
         safe_model_name = str(embedding_model).replace("/", "_").replace("\\", "_")
-        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}.png"
+        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}_{plot_style}.png"
     output_path = results_path / output_name
 
     fig.savefig(
@@ -410,7 +494,8 @@ def main():
         results_dir=RESULTS_DIR,
         target_metric="test_bacc_mean",
         whiskers=False,
-        embedding_mode="average",
+        embedding_mode="average",        # average or per_model
+        plot_style="summary",             # layers  or summary
     )
 
 if __name__ == "__main__":
