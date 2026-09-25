@@ -385,10 +385,10 @@ def generate_plots(
     )
 
     if embedding_mode == "average":
-        output_name = "_gnn_variants_layers_benchmark.pdf"
+        output_name = "_gnn_variants_layers_benchmark.png"
     else:
         safe_model_name = str(embedding_model).replace("/", "_").replace("\\", "_")
-        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}.pdf"
+        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}.png"
     output_path = results_path / output_name
 
     fig.savefig(
