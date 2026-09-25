@@ -1,10 +1,11 @@
+# %%
 import glob
 import pandas as pd
 import seaborn as sns
 from pathlib import Path
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-
+# %%
 
 def merge_worker_results(results_dir: str = "results") -> None:
     results_path = Path(results_dir)
@@ -35,17 +36,47 @@ def merge_worker_results(results_dir: str = "results") -> None:
 def generate_plots(
     results_dir: str = "results",
     target_metric: str = "test_bacc_mean",
-    whiskers: bool = True
+    whiskers: bool = True,
+    embedding_mode: str = "average",
+    embedding_model: str = None,
 ) -> None:
 
     results_path = Path(results_dir)
-    master_summary_path = results_path / "master_results.csv"
+    master_summary_path = results_path / "_1master_results.csv"
 
     if not master_summary_path.exists():
-        print("[ERROR] Brak pliku master_results.csv.")
+        print("[ERROR] Brak pliku _1master_results.csv.")
         return
 
     df = pd.read_csv(master_summary_path)
+
+    if embedding_mode not in {"average", "per_model"}:
+        raise ValueError("embedding_mode must be 'average' or 'per_model'")
+
+    if "embedding_model" not in df.columns:
+        print("[ERROR] Brak kolumny 'embedding_model'.")
+        return
+
+    if embedding_mode == "per_model" and embedding_model is None:
+        embedding_models = sorted(df["embedding_model"].dropna().unique())
+        if not embedding_models:
+            print("[ERROR] Brak embedding models do narysowania.")
+            return
+        for model_name in embedding_models:
+            generate_plots(
+                results_dir=results_dir,
+                target_metric=target_metric,
+                whiskers=whiskers,
+                embedding_mode="per_model",
+                embedding_model=str(model_name),
+            )
+        return
+
+    if embedding_mode == "per_model":
+        df = df[df["embedding_model"].astype(str) == str(embedding_model)].copy()
+        if df.empty:
+            print(f"[ERROR] Brak danych dla embedding modelu '{embedding_model}'.")
+            return
 
     if target_metric not in df.columns:
         print(f"[ERROR] Brak kolumny '{target_metric}'.")
@@ -353,10 +384,12 @@ def generate_plots(
         hspace=0.28
     )
 
-    output_path = (
-        results_path
-        / "_gnn_variants_layers_benchmark.pdf"
-    )
+    if embedding_mode == "average":
+        output_name = "_gnn_variants_layers_benchmark.pdf"
+    else:
+        safe_model_name = str(embedding_model).replace("/", "_").replace("\\", "_")
+        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}.pdf"
+    output_path = results_path / output_name
 
     fig.savefig(
         output_path,
@@ -372,8 +405,13 @@ def generate_plots(
 
 def main():
     RESULTS_DIR = "/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/gnn_results"
-    # merge_worker_results(results_dir=RESULTS_DIR)
-    generate_plots(results_dir=RESULTS_DIR, target_metric="test_bacc_mean", whiskers=False)
+    merge_worker_results(results_dir=RESULTS_DIR)
+    generate_plots(
+        results_dir=RESULTS_DIR,
+        target_metric="test_bacc_mean",
+        whiskers=False,
+        embedding_mode="average",
+    )
 
 if __name__ == "__main__":
     main()
