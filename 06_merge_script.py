@@ -1,10 +1,9 @@
 import glob
-from pathlib import Path
 import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
 import seaborn as sns
-from scipy import stats
+from pathlib import Path
+import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
 
 def merge_worker_results(results_dir: str = "results") -> None:
     results_path = Path(results_dir)
@@ -36,7 +35,6 @@ def merge_worker_results(results_dir: str = "results") -> None:
         print(f"[DETAILED] Scalono {len(detailed_files)} plików foldów do {output_detailed} (Łącznie: {len(df_detailed)} wierszy)")
 
 
-from matplotlib.lines import Line2D
 
 
 def generate_plots(
@@ -58,10 +56,6 @@ def generate_plots(
         print(f"[ERROR] Brak kolumny '{target_metric}'.")
         return
 
-    # =========================================================
-    # Ustawienia eksperymentu
-    # =========================================================
-
     VARIANTS_ORDER = (
         ["grid4", "grid8"]
         + [f"knn{k}" for k in [1, 2, 3, 4, 5, 6, 7, 8, 12, 16]]
@@ -82,10 +76,6 @@ def generate_plots(
 
     LAYERS = [1, 2, 3, 4, 5]
 
-    # =========================================================
-    # Kolumna STD
-    # =========================================================
-
     std_metric = target_metric.replace("_mean", "_std")
 
     if whiskers and std_metric not in df.columns:
@@ -95,39 +85,14 @@ def generate_plots(
         )
         whiskers = False
 
-    # =========================================================
-    # Przygotowanie danych
-    # =========================================================
-
     df = df.copy()
-
-    df["num_layers"] = pd.to_numeric(
-        df["num_layers"],
-        errors="coerce"
-    )
-
-    df[target_metric] = pd.to_numeric(
-        df[target_metric],
-        errors="coerce"
-    )
-
+    df["num_layers"] = pd.to_numeric(df["num_layers"], errors="coerce")
+    df[target_metric] = pd.to_numeric(df[target_metric], errors="coerce")
+    
     if std_metric in df.columns:
-        df[std_metric] = pd.to_numeric(
-            df[std_metric],
-            errors="coerce"
-        )
-
-    df = df.dropna(
-        subset=[
-            "graph_model",
-            "graph_variant",
-            "num_layers",
-            target_metric
-        ]
-    )
-
-    # MLP ma graph_variant == "none",
-    # dlatego filtrujemy osobno.
+        df[std_metric] = pd.to_numeric(df[std_metric], errors="coerce")
+    
+    df = df.dropna(subset=["graph_model", "graph_variant", "num_layers", target_metric])
     df = df[
         (
             (df["graph_model"] == "mlp")
@@ -142,30 +107,16 @@ def generate_plots(
         )
     ]
 
-    df = df[
-        df["graph_model"].isin(MODELS)
-    ]
+    df = df[df["graph_model"].isin(MODELS)]
 
     if df.empty:
         print("[ERROR] Brak danych do narysowania.")
         return
 
-    # =========================================================
-    # Styl publikacyjny
-    # =========================================================
-
     plt.rcParams["font.family"] = "DejaVu Sans"
     plt.rcParams["font.size"] = 10
 
-    sns.set_theme(
-        style="ticks",
-        palette="colorblind"
-    )
-
-    # =========================================================
-    # Figure
-    # =========================================================
-
+    sns.set_theme(style="ticks", palette="colorblind")
     fig, axes = plt.subplots(
         3,
         3,
@@ -175,32 +126,14 @@ def generate_plots(
     )
 
     axes = axes.flatten()
-
-    layer_colors = sns.color_palette(
-        "viridis",
-        len(LAYERS)
-    )
-
-    # =========================================================
-    # Rysowanie
-    # =========================================================
+    layer_colors = sns.color_palette("viridis", len(LAYERS))
 
     for i, model in enumerate(MODELS):
-
         ax = axes[i]
-
-        model_df = df[
-            df["graph_model"] == model
-        ]
-
-        # =====================================================
-        # MLP — brak struktury grafowej
-        # =====================================================
+        model_df = df[df["graph_model"] == model]
 
         if model == "mlp":
-
             for layer_idx, layer in enumerate(LAYERS):
-
                 layer_data = model_df[
                     (model_df["graph_variant"] == "none")
                     & (model_df["num_layers"] == layer)
@@ -208,16 +141,9 @@ def generate_plots(
 
                 if layer_data.empty:
                     continue
-
-                # Jeśli istnieją duplikaty, bierzemy średnią.
                 y = layer_data[target_metric].mean()
 
-                # -------------------------------------------------
-                # Bez whiskerów
-                # -------------------------------------------------
-
                 if not whiskers:
-
                     ax.axhline(
                         y,
                         color=layer_colors[layer_idx],
@@ -226,17 +152,9 @@ def generate_plots(
                         alpha=0.7
                     )
 
-
-                # -------------------------------------------------
-                # Z whiskerem
-                # -------------------------------------------------
-
                 else:
-
                     if std_metric in layer_data.columns:
                         std = layer_data[std_metric].mean()
-
-
                         ax.axhline(
                             y,
                             color=layer_colors[layer_idx],
@@ -256,35 +174,13 @@ def generate_plots(
                 style="italic"
             )
 
-        # =====================================================
-        # Pozostałe GNN
-        # =====================================================
-
         else:
-
             for layer_idx, layer in enumerate(LAYERS):
+                layer_data = model_df[model_df["num_layers"] == layer]
 
-                layer_data = model_df[
-                    model_df["num_layers"] == layer
-                ]
-
-                for family_prefix in [
-                    "grid",
-                    "knn",
-                    "random"
-                ]:
-
-                    family_variants = [
-                        v
-                        for v in VARIANTS_ORDER
-                        if v.startswith(family_prefix)
-                    ]
-
-                    fam_data = layer_data[
-                        layer_data["graph_variant"].str.startswith(
-                            family_prefix
-                        )
-                    ]
+                for family_prefix in ["grid", "knn", "random"]:
+                    family_variants = [v for v in VARIANTS_ORDER if v.startswith(family_prefix)]
+                    fam_data = layer_data[layer_data["graph_variant"].str.startswith(family_prefix)]
 
                     if fam_data.empty:
                         continue
@@ -324,12 +220,7 @@ def generate_plots(
 
                     y = fam_data["mean"].values
 
-                    # -------------------------------------------------
-                    # Bez whiskerów
-                    # -------------------------------------------------
-
                     if not whiskers:
-
                         ax.plot(
                             x,
                             y,
@@ -340,14 +231,8 @@ def generate_plots(
                             color=layer_colors[layer_idx],
                         )
 
-                    # -------------------------------------------------
-                    # Z whiskerami
-                    # -------------------------------------------------
-
                     else:
-
                         yerr = fam_data["std"].values
-
                         ax.errorbar(
                             x,
                             y,
@@ -361,10 +246,6 @@ def generate_plots(
                             capthick=1.0,
                             color=layer_colors[layer_idx],
                         )
-
-        # =====================================================
-        # Granice rodzin grafów
-        # =====================================================
 
         ax.axvline(
             1.5,
@@ -388,10 +269,6 @@ def generate_plots(
             color="gray",
             alpha=0.05
         )
-
-        # =====================================================
-        # Panel title
-        # =====================================================
 
         ax.set_title(
             model.upper(),
@@ -419,10 +296,6 @@ def generate_plots(
             right=True
         )
 
-    # =========================================================
-    # X axis
-    # =========================================================
-
     for ax in axes:
 
         ax.set_xticks(
@@ -434,10 +307,6 @@ def generate_plots(
             rotation=90,
             fontsize=8
         )
-
-    # =========================================================
-    # Y axis
-    # =========================================================
 
     fig.supxlabel(
         "Graph Variant (Grid | kNN | Random)",
@@ -452,10 +321,6 @@ def generate_plots(
         fontweight="bold",
         x=0.02
     )
-
-    # =========================================================
-    # Własna legenda dla warstw
-    # =========================================================
 
     legend_handles = [
         Line2D(
@@ -484,10 +349,6 @@ def generate_plots(
         columnspacing=1.5
     )
 
-    # =========================================================
-    # Layout
-    # =========================================================
-
     fig.subplots_adjust(
         left=0.075,
         right=0.99,
@@ -496,10 +357,6 @@ def generate_plots(
         wspace=0.08,
         hspace=0.28
     )
-
-    # =========================================================
-    # Save
-    # =========================================================
 
     output_path = (
         results_path
@@ -514,10 +371,8 @@ def generate_plots(
 
     plt.show()
     plt.close(fig)
-
     print(f"[PLOT] Zapisano: {output_path}")
 
-    # %%
 # %%
 
 def main():
