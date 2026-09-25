@@ -17,3 +17,4 @@ mil_results/*.csv
 mil_results/*.yml
 wandb/*
 /figures
+/gnn_results
