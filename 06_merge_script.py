@@ -94,16 +94,16 @@ def generate_plots(
     )
 
     MODELS = [
-        "mlp",
+        "gin",
         "gcn",
         "gcnii",
+        "fagcn",
         "gat",
         "gatv2",
-        "transformer",
-        "gin",
         "graphsage",
-        "fagcn",
+        "transformer",
     ]
+    DISPLAY_NAMES = {"graphsage": "GraphSAGE", "transformer": "GT"}
 
     LAYERS = [1, 2, 3, 4, 5]
 
@@ -138,6 +138,11 @@ def generate_plots(
         )
     ]
 
+    mlp_reference = df.loc[
+        (df["graph_model"] == "mlp")
+        & (df["graph_variant"] == "none"),
+        target_metric,
+    ].mean()
     df = df[df["graph_model"].isin(MODELS)]
 
     if df.empty:
@@ -149,9 +154,9 @@ def generate_plots(
 
     sns.set_theme(style="ticks", palette="colorblind")
     fig, axes = plt.subplots(
-        3,
-        3,
-        figsize=(16, 11),
+        2,
+        4,
+        figsize=(18, 9),
         sharex=True,
         sharey=True
     )
@@ -162,6 +167,16 @@ def generate_plots(
     for i, model in enumerate(MODELS):
         ax = axes[i]
         model_df = df[df["graph_model"] == model]
+
+        if pd.notna(mlp_reference):
+            ax.axhline(
+                mlp_reference,
+                color="black",
+                linestyle=":",
+                linewidth=1.8,
+                alpha=0.9,
+                zorder=0,
+            )
 
         if plot_style == "summary":
             if model == "mlp":
@@ -183,7 +198,7 @@ def generate_plots(
                     )
                 ax.text(
                     0.5,
-                    0.92,
+                    0.42,
                     "No graph structure",
                     transform=ax.transAxes,
                     ha="center",
@@ -370,7 +385,7 @@ def generate_plots(
         )
 
         ax.set_title(
-            model.upper(),
+            DISPLAY_NAMES.get(model, model.upper()),
             fontsize=12,
             fontweight="bold",
             pad=8
@@ -424,6 +439,7 @@ def generate_plots(
     if plot_style == "summary":
         legend_handles = [
             Line2D([0], [0], color="black", linewidth=1.8, label="Mean across layers"),
+            Line2D([0], [0], color="black", linestyle=":", linewidth=1.8, label="MLP mean reference"),
             Patch(facecolor="gray", alpha=0.22, label="Min-max across layers"),
             Line2D([0], [0], color="tab:blue", linewidth=1.8, label="Grid"),
             Line2D([0], [0], color="tab:orange", linewidth=1.8, label="kNN"),
@@ -432,18 +448,8 @@ def generate_plots(
         legend_title = "Summary"
     else:
         legend_handles = [
-            Line2D(
-                [0],
-                [0],
-                color=layer_colors[i],
-                marker="o",
-                linestyle="-",
-                linewidth=1.5,
-                markersize=5,
-                label=str(layer)
-            )
-            for i, layer in enumerate(LAYERS)
-        ]
+            Line2D([0], [0], color="black", linestyle=":", linewidth=1.8, label="MLP mean reference"), ] + [
+            Line2D([0], [0], color=layer_colors[i], marker="o", linestyle="-", linewidth=1.5, markersize=5, label=str(layer)) for i, layer in enumerate(LAYERS)]
         legend_title = "Layers"
 
     fig.legend(
@@ -451,7 +457,7 @@ def generate_plots(
         title=legend_title,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.985),
-        ncol=len(LAYERS),
+        ncol=len(legend_handles),
         frameon=True,
         fontsize=10,
         title_fontsize=10,
@@ -494,8 +500,8 @@ def main():
         results_dir=RESULTS_DIR,
         target_metric="test_bacc_mean",
         whiskers=False,
-        embedding_mode="average",        # average or per_model
-        plot_style="summary",             # layers  or summary
+        embedding_mode="per_model",        # average or per_model
+        plot_style="layers",              # layers  or summary
     )
 
 if __name__ == "__main__":
