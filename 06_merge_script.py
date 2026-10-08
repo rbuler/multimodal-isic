@@ -18,7 +18,7 @@ def merge_worker_results(results_dir: str = "results") -> None:
                         "seed", "hidden_dim", "dropout", "num_layers"]
         summary_keys = [col for col in summary_keys if col in df_summary.columns]
         df_summary = df_summary.drop_duplicates(subset=summary_keys, keep="last")
-        output_summary = results_path / "_1master_results.csv"
+        output_summary = results_path / "_2master_results.csv"
         df_summary.sort_values(summary_keys).to_csv(output_summary, index=False)
         print(f"[SUMMARY] Scalono {len(summary_files)} plików do {output_summary} (Łącznie: {len(df_summary)} eksperymentów)")
 
@@ -29,7 +29,7 @@ def merge_worker_results(results_dir: str = "results") -> None:
                          "seed", "hidden_dim", "dropout", "num_layers", "fold"]
         detailed_keys = [col for col in detailed_keys if col in df_detailed.columns]
         df_detailed = df_detailed.drop_duplicates(subset=detailed_keys, keep="last")
-        output_detailed = results_path / "_1master_detailed_fold_results.csv"
+        output_detailed = results_path / "_2master_detailed_fold_results.csv"
         df_detailed.sort_values(detailed_keys).to_csv(output_detailed, index=False)
         print(f"[DETAILED] Scalono {len(detailed_files)} plików foldów do {output_detailed} (Łącznie: {len(df_detailed)} wierszy)")
 
@@ -117,6 +117,9 @@ def generate_plots(
         whiskers = False
 
     df = df.copy()
+
+    df = df[df['embedding_model'] == 'a9d7feb3402a4670bbcfa73f534acab7']
+
     df["num_layers"] = pd.to_numeric(df["num_layers"], errors="coerce")
     df[target_metric] = pd.to_numeric(df[target_metric], errors="coerce")
     
