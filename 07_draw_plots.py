@@ -14,13 +14,14 @@ def generate_plots(
     embedding_mode: str = "average",
     embedding_model: str = None,
     plot_style: str = "layers",
+    include_mlp_baseline: bool = True,
 ) -> None:
 
     results_path = Path(results_dir)
-    master_summary_path = results_path / "_2master_results.csv"
+    master_summary_path = results_path / "_3master_results.csv"
 
     if not master_summary_path.exists():
-        print("[ERROR] Brak pliku _2master_results.csv.")
+        print("[ERROR] Brak pliku _3master_results.csv.")
         return
 
     df = pd.read_csv(master_summary_path)
@@ -47,6 +48,7 @@ def generate_plots(
                 embedding_mode="per_model",
                 embedding_model=str(model_name),
                 plot_style=plot_style,
+                include_mlp_baseline=include_mlp_baseline,
             )
         return
 
@@ -113,11 +115,14 @@ def generate_plots(
         )
     ]
 
-    mlp_reference = df.loc[
-        (df["graph_model"] == "mlp")
-        & (df["graph_variant"] == "none"),
-        target_metric,
-    ].mean()
+    if include_mlp_baseline:
+        mlp_reference = df.loc[
+            (df["graph_model"] == "mlp")
+            & (df["graph_variant"] == "none"),
+            target_metric,
+        ].mean()
+    else:
+        mlp_reference = float("nan")
     df = df[df["graph_model"].isin(MODELS)]
 
     if df.empty:
@@ -143,7 +148,7 @@ def generate_plots(
         ax = axes[i]
         model_df = df[df["graph_model"] == model]
 
-        if pd.notna(mlp_reference):
+        if include_mlp_baseline and pd.notna(mlp_reference):
             ax.axhline(
                 mlp_reference,
                 color="black",
@@ -195,8 +200,14 @@ def generate_plots(
                     if family_data.empty:
                         continue
 
+                    layer_means = (
+                        family_data
+                        .groupby(["graph_variant", "num_layers"])[target_metric]
+                        .mean()
+                        .reset_index()
+                    )
                     summary_data = (
-                        family_data.groupby("graph_variant")[target_metric]
+                        layer_means.groupby("graph_variant")[target_metric]
                         .agg(mean="mean", minimum="min", maximum="max")
                         .reindex(family_variants)
                         .dropna(subset=["mean"])
@@ -414,17 +425,50 @@ def generate_plots(
     if plot_style == "summary":
         legend_handles = [
             Line2D([0], [0], color="black", linewidth=1.8, label="Mean across layers"),
-            Line2D([0], [0], color="black", linestyle=":", linewidth=1.8, label="MLP mean reference"),
             Patch(facecolor="gray", alpha=0.22, label="Min-max across layers"),
             Line2D([0], [0], color="tab:blue", linewidth=1.8, label="Grid"),
             Line2D([0], [0], color="tab:orange", linewidth=1.8, label="kNN"),
             Line2D([0], [0], color="tab:green", linewidth=1.8, label="Random"),
         ]
+        if include_mlp_baseline:
+            legend_handles.insert(
+                1,
+                Line2D(
+                    [0],
+                    [0],
+                    color="black",
+                    linestyle=":",
+                    linewidth=1.8,
+                    label="MLP mean reference",
+                ),
+            )
         legend_title = "Summary"
     else:
         legend_handles = [
-            Line2D([0], [0], color="black", linestyle=":", linewidth=1.8, label="MLP mean reference"), ] + [
-            Line2D([0], [0], color=layer_colors[i], marker="o", linestyle="-", linewidth=1.5, markersize=5, label=str(layer)) for i, layer in enumerate(LAYERS)]
+            Line2D(
+                [0],
+                [0],
+                color=layer_colors[i],
+                marker="o",
+                linestyle="-",
+                linewidth=1.5,
+                markersize=5,
+                label=str(layer),
+            )
+            for i, layer in enumerate(LAYERS)
+        ]
+        if include_mlp_baseline:
+            legend_handles.insert(
+                0,
+                Line2D(
+                    [0],
+                    [0],
+                    color="black",
+                    linestyle=":",
+                    linewidth=1.8,
+                    label="MLP mean reference",
+                ),
+            )
         legend_title = "Layers"
 
     fig.legend(
@@ -453,7 +497,7 @@ def generate_plots(
         output_name = f"_gnn_variants_layers_benchmark_{plot_style}.png"
     else:
         safe_model_name = str(embedding_model).replace("/", "_").replace("\\", "_")
-        output_name = f"_gnn_variants_layers_benchmark_{safe_model_name}_{plot_style}.png"
+        output_name = f"_gnn_variants_layers_benchmark3_{safe_model_name}_{plot_style}.png"
     output_path = results_path / output_name
 
     fig.savefig(
@@ -466,7 +510,7 @@ def generate_plots(
     plt.close(fig)
     print(f"[PLOT] Zapisano: {output_path}")
 
-
+# %%
 
 def main():
     RESULTS_DIR = "/users/project1/pt01191/MMODAL_ISIC/Code/multimodal-isic/gnn_results"
@@ -476,7 +520,8 @@ def main():
         whiskers=False,
         embedding_mode="per_model",        # average or per_model    # if there are more embedding models,
                                                                      # we can generate plots for each model separately
-        plot_style="layers",              # layers  or summary
+        plot_style="summary",              # layers  or summary
+        include_mlp_baseline=True,
     )
 
 if __name__ == "__main__":
