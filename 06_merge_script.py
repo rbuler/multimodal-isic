@@ -40,5 +40,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# TODO think of showing plot per layer count, and show all models in one plot, with different colors for each model.
