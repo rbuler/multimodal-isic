@@ -121,6 +121,7 @@ def generate_plots(
             & (df["graph_variant"] == "none"),
             target_metric,
         ].mean()
+        print(mlp_reference)
     else:
         mlp_reference = float("nan")
     df = df[df["graph_model"].isin(MODELS)]
