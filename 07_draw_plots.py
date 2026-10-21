@@ -92,7 +92,7 @@ def generate_plots(
         whiskers = False
 
     df = df.copy()
-    # df = df[df['embedding_model'] == 'a9d7feb3402a4670bbcfa73f534acab7']
+    df = df[df['embedding_model'] == 'a9d7feb3402a4670bbcfa73f534acab7']
 
     df["num_layers"] = pd.to_numeric(df["num_layers"], errors="coerce")
     df[target_metric] = pd.to_numeric(df[target_metric], errors="coerce")
