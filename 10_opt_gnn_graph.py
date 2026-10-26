@@ -35,7 +35,7 @@ GRAPH_VARIANTS = (
 	+ [f"knn{k}" for k in range(1, 9)] + ["knn12", "knn16"]
 	+ [f"random{k}" for k in range(1, 9)] + ["random12", "random16"]
 )
-RESULTS_DIR = ROOT / "gnn_results"
+RESULTS_DIR = ROOT / "gnn_results_raytune"
 TRIALS_PATH = RESULTS_DIR / "hparam_search_trials.csv"
 TOP5_PATH = RESULTS_DIR / "hparam_search_top5_per_execution.csv"
 GLOBAL_TOP5_PATH = RESULTS_DIR / "hparam_search_global_top5.csv"
@@ -55,7 +55,7 @@ def load_training_helpers():
 def parser() -> argparse.Namespace:
 	arg_parser = argparse.ArgumentParser(description=__doc__)
 	arg_parser.add_argument("--architecture", choices=("all",) + ARCHITECTURES, default="all")
-	arg_parser.add_argument("--num-samples", type=int, default=100,
+	arg_parser.add_argument("--num-samples", type=int, default=500,
 							help="New Ray trials per architecture for this invocation.")
 	arg_parser.add_argument(
 		"--max-concurrent",
