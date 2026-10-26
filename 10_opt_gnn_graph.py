@@ -239,25 +239,28 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 	storage_path.mkdir(parents=True, exist_ok=True)
 	available_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
 	available_cpus = max(1, (os.cpu_count() or 1) - 4)
+	
 	if args.gpu_per_trial > 0:
 		max_by_gpu = int(available_gpus / args.gpu_per_trial)
 	else:
 		max_by_gpu = 10**9
+		
 	max_by_cpu = int(available_cpus / max(args.cpu_per_trial, 1e-9))
 	resource_capacity = max(1, min(max_by_gpu, max_by_cpu))
-	max_concurrent = resource_capacity if args.max_concurrent is None else min(
-		args.max_concurrent, resource_capacity
-	)
+	max_concurrent = resource_capacity if args.max_concurrent is None else min(args.max_concurrent, resource_capacity)
+	
 	if args.max_concurrent is None:
 		print(
 			f"Automatic concurrency: {max_concurrent} trials "
 			f"({available_gpus} GPUs at {args.gpu_per_trial} GPU/trial, "
 			f"{available_cpus} CPUs at {args.cpu_per_trial} CPU/trial)."
 		)
+		
 	scheduler = ASHAScheduler(
 		metric="val_bacc", mode="max", max_t=len(args.folds),
 		grace_period=min(args.grace_period, len(args.folds)), reduction_factor=2,
 	)
+	
 	reporter = CLIReporter(metric_columns=["val_bacc", "val_accuracy", "val_auc", "val_macro_f1", "training_iteration"])
 	analysis = tune.run(
 		tune.with_parameters(
@@ -276,6 +279,7 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 		verbose=1,
 	)
 	rows = []
+	
 	for trial in analysis.trials:
 		result = trial.last_result or {}
 		row = {
@@ -303,6 +307,7 @@ def main() -> None:
 	architectures = ARCHITECTURES if args.architecture == "all" else (args.architecture,)
 	execution_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 	all_rows = []
+	
 	for architecture in architectures:
 		print(f"\n=== Searching {architecture} ({args.num_samples} new trials) ===")
 		rows = run_architecture(architecture, args, execution_id)
