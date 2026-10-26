@@ -55,23 +55,11 @@ def load_training_helpers():
 def parser() -> argparse.Namespace:
 	arg_parser = argparse.ArgumentParser(description=__doc__)
 	arg_parser.add_argument("--architecture", choices=("all",) + ARCHITECTURES, default="all")
-	arg_parser.add_argument("--num-samples", type=int, default=500,
-							help="New Ray trials per architecture for this invocation.")
-	arg_parser.add_argument(
-		"--max-concurrent",
-		type=int,
-		default=None,
-		help="Maximum simultaneous trials; defaults to the GPU/CPU resource capacity.",
-	)
+	arg_parser.add_argument("--num-samples", type=int, default=500)
+	arg_parser.add_argument("--max-concurrent", type=int, default=None)
 	arg_parser.add_argument("--gpu-per-trial", type=float, default=.25)
 	arg_parser.add_argument("--cpu-per-trial", type=float, default=8.0)
-	arg_parser.add_argument(
-		"--folds",
-		nargs="+",
-		type=int,
-		default=list(range(5)),
-		help="Train/validation folds used during search; test is never loaded.",
-	)
+	arg_parser.add_argument("--folds", nargs="+", type=int, default=list(range(5)))
 	arg_parser.add_argument("--seed", type=int, default=42)
 	arg_parser.add_argument("--epochs", type=int, default=200)
 	arg_parser.add_argument("--patience", type=int, default=16)
@@ -122,12 +110,14 @@ def train_validation_trial(
 	load_variant = "grid4" if architecture == "mlp" else variant
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 	fold_metrics: list[dict[str, float]] = []
+	
 	for fold_index, fold in enumerate(folds, start=1):
 		train_records = helpers.load_fold_records(Path(root), embedding_model, fold, "train", load_variant)
 		val_records = helpers.load_fold_records(Path(root), embedding_model, fold, "val", load_variant)
 		input_dim = train_records[0]["x"].shape[1]
 		num_classes = max(record["y"] for record in train_records + val_records) + 1
 		helpers.set_seed(seed + fold)
+		
 		model = helpers.GraphMIL(
 			input_dim=input_dim, gnn_type=architecture,
 			gnn_hidden=config["hidden_dim"], gnn_layers=config["num_layers"],
@@ -138,6 +128,7 @@ def train_validation_trial(
 			num_classes=num_classes, use_residual=config["use_residual"],
 			use_layer_norm=config["use_layer_norm"],
 		).to(device)
+		
 		optimizer_class = torch.optim.Adam if config["optimizer"] == "adam" else torch.optim.AdamW
 		optimizer = optimizer_class(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
 		criterion = torch.nn.CrossEntropyLoss()
@@ -145,8 +136,10 @@ def train_validation_trial(
 		best_state = None
 		best_fold_bacc = -np.inf
 		no_improvement = 0
+		
 		for epoch in range(1, max_epochs + 1):
 			model.train()
+			
 			for index in rng.integers(0, len(train_records), len(train_records)):
 				record = train_records[int(index)]
 				optimizer.zero_grad()
@@ -155,7 +148,9 @@ def train_validation_trial(
 				loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), torch.tensor([record["y"]], device=device))
 				loss.backward()
 				optimizer.step()
+				
 			metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
+			
 			if metrics["bacc"] > best_fold_bacc + 1e-6:
 				best_fold_bacc = metrics["bacc"]
 				best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
@@ -164,8 +159,10 @@ def train_validation_trial(
 				no_improvement += 1
 			if no_improvement >= patience:
 				break
+			
 		if best_state is not None:
 			model.load_state_dict(best_state)
+			
 		fold_metrics.append(helpers.evaluate(model, val_records, criterion, device, num_classes))
 		mean_bacc = float(np.mean([item["bacc"] for item in fold_metrics]))
 		tune.report(
