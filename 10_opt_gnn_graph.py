@@ -211,8 +211,6 @@ def append_and_refresh_top5(rows: list[dict[str, Any]], execution_id: str) -> No
 	frame = frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
 	frame.to_csv(TRIALS_PATH, index=False)
 
-	# Preserve the best five from every execution; later test evaluation can
-	# train all of these candidates and choose the final test-based five.
 	top5_per_execution = (
 		frame.sort_values(
 			["execution_id", "architecture", "val_bacc"],
