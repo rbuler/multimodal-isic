@@ -248,7 +248,7 @@ def load_fold_records(root: Path, embedding_model: str, fold: int, split: str,
     for _, row in merged.iterrows():
         x = np.asarray(row["patch_embeddings"], dtype=np.float32)
         edge_index = edge_index_for_variant(row, variant)
-        if x.ndim != 2 or edge_index.shape[0] != 2:
+        if x.ndim != 2 or (edge_index is not None and edge_index.shape[0] != 2):
             raise ValueError(f"Invalid graph record for image {row['image_id']}")
         records.append({"x": x, "edge_index": edge_index, "y": int(row["label"]),
                         "image_id": str(row["image_id"])})
@@ -261,8 +261,9 @@ def evaluate(model: nn.Module, records: Iterable[Dict], criterion: nn.Module,
     labels, scores, total_loss = [], [], 0.0
     with torch.no_grad():
         for record in records:
-            probs, att = model(torch.from_numpy(record["x"]).to(device),
-                           torch.from_numpy(record["edge_index"]).to(device))
+            edge_index = record["edge_index"]
+            edge_index = None if edge_index is None else torch.from_numpy(edge_index).to(device)
+            probs, att = model(torch.from_numpy(record["x"]).to(device), edge_index)
             target = torch.tensor([record["y"]], device=device)
             total_loss += float(criterion(torch.log(probs + 1e-9).unsqueeze(0), target).item())
             labels.append(record["y"])

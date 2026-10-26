@@ -9,7 +9,6 @@ never loaded by the search objective; a separate evaluation script can consume
 from __future__ import annotations
 
 import argparse
-import csv
 import importlib.util
 import json
 import os
@@ -66,8 +65,13 @@ def parser() -> argparse.Namespace:
 	)
 	arg_parser.add_argument("--gpu-per-trial", type=float, default=.25)
 	arg_parser.add_argument("--cpu-per-trial", type=float, default=8.0)
-	arg_parser.add_argument("--fold", type=int, default=0,
-							help="Train/validation fold used during search; test is never loaded.")
+	arg_parser.add_argument(
+		"--folds",
+		nargs="+",
+		type=int,
+		default=list(range(5)),
+		help="Train/validation folds used during search; test is never loaded.",
+	)
 	arg_parser.add_argument("--seed", type=int, default=42)
 	arg_parser.add_argument("--epochs", type=int, default=200)
 	arg_parser.add_argument("--patience", type=int, default=16)
@@ -107,82 +111,79 @@ def search_space(architecture: str) -> dict[str, Any]:
 
 
 def train_validation_trial(
-	config: dict[str, Any], *, root: str, embedding_model: str, fold: int,
+	config: dict[str, Any], *, root: str, embedding_model: str, folds: list[int],
 	seed: int, max_epochs: int, patience: int,
 ) -> None:
-	"""Train one configuration using only one train/validation fold."""
+	"""Train one configuration across folds using validation data only."""
 	helpers = load_training_helpers()
 	start = time.perf_counter()
 	architecture = config["architecture"]
 	variant = config["graph_variant"]
 	load_variant = "grid4" if architecture == "mlp" else variant
-	train_records = helpers.load_fold_records(Path(root), embedding_model, fold, "train", load_variant)
-	val_records = helpers.load_fold_records(Path(root), embedding_model, fold, "val", load_variant)
-	input_dim = train_records[0]["x"].shape[1]
-	num_classes = max(record["y"] for record in train_records + val_records) + 1
 	device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-	helpers.set_seed(seed)
+	fold_metrics: list[dict[str, float]] = []
+	for fold_index, fold in enumerate(folds, start=1):
+		train_records = helpers.load_fold_records(Path(root), embedding_model, fold, "train", load_variant)
+		val_records = helpers.load_fold_records(Path(root), embedding_model, fold, "val", load_variant)
+		input_dim = train_records[0]["x"].shape[1]
+		num_classes = max(record["y"] for record in train_records + val_records) + 1
+		helpers.set_seed(seed + fold)
+		model = helpers.GraphMIL(
+			input_dim=input_dim, gnn_type=architecture,
+			gnn_hidden=config["hidden_dim"], gnn_layers=config["num_layers"],
+			gnn_dropout=config["dropout"], gnn_heads=config["gnn_heads"],
+			gnn_concat=config["gnn_concat"], att_dim=config["att_dim"],
+			att_heads=config["att_heads"], pool_dropout=config["pool_dropout"],
+			classifier_dim=config["classifier_dim"], classifier_light=config["classifier_light"],
+			num_classes=num_classes, use_residual=config["use_residual"],
+			use_layer_norm=config["use_layer_norm"],
+		).to(device)
+		optimizer_class = torch.optim.Adam if config["optimizer"] == "adam" else torch.optim.AdamW
+		optimizer = optimizer_class(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
+		criterion = torch.nn.CrossEntropyLoss()
+		rng = np.random.default_rng(seed + fold)
+		best_state = None
+		best_fold_bacc = -np.inf
+		no_improvement = 0
+		for epoch in range(1, max_epochs + 1):
+			model.train()
+			for index in rng.integers(0, len(train_records), len(train_records)):
+				record = train_records[int(index)]
+				optimizer.zero_grad()
+				edge_index = None if record["edge_index"] is None else torch.from_numpy(record["edge_index"]).to(device)
+				probs, _ = model(torch.from_numpy(record["x"]).to(device), edge_index=edge_index)
+				loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), torch.tensor([record["y"]], device=device))
+				loss.backward()
+				optimizer.step()
+			metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
+			if metrics["bacc"] > best_fold_bacc + 1e-6:
+				best_fold_bacc = metrics["bacc"]
+				best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
+				no_improvement = 0
+			else:
+				no_improvement += 1
+			if no_improvement >= patience:
+				break
+		if best_state is not None:
+			model.load_state_dict(best_state)
+		fold_metrics.append(helpers.evaluate(model, val_records, criterion, device, num_classes))
+		mean_bacc = float(np.mean([item["bacc"] for item in fold_metrics]))
+		tune.report(
+			val_bacc=mean_bacc,
+			val_bacc_std=float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
+			training_iteration=fold_index,
+		)
 
-	model = helpers.GraphMIL(
-		input_dim=input_dim,
-		gnn_type=architecture,
-		gnn_hidden=config["hidden_dim"],
-		gnn_layers=config["num_layers"],
-		gnn_dropout=config["dropout"],
-		gnn_heads=config["gnn_heads"],
-		gnn_concat=config["gnn_concat"],
-		att_dim=config["att_dim"],
-		att_heads=config["att_heads"],
-		pool_dropout=config["pool_dropout"],
-		classifier_dim=config["classifier_dim"],
-		classifier_light=config["classifier_light"],
-		num_classes=num_classes,
-		use_residual=config["use_residual"],
-		use_layer_norm=config["use_layer_norm"],
-	).to(device)
-	optimizer_class = torch.optim.Adam if config["optimizer"] == "adam" else torch.optim.AdamW
-	optimizer = optimizer_class(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
-	criterion = torch.nn.CrossEntropyLoss()
-	rng = np.random.default_rng(seed)
-	best_state = None
-	best_val_bacc = -np.inf
-	best_metrics: dict[str, float] = {}
-	no_improvement = 0
-
-	for epoch in range(1, max_epochs + 1):
-		model.train()
-		indices = rng.integers(0, len(train_records), len(train_records))
-		for index in indices:
-			record = train_records[int(index)]
-			optimizer.zero_grad()
-			edge_index = None if architecture == "mlp" else torch.from_numpy(record["edge_index"]).to(device)
-			probs, _ = model(torch.from_numpy(record["x"]).to(device), edge_index=edge_index)
-			loss = criterion(torch.log(probs + 1e-9).unsqueeze(0), torch.tensor([record["y"]], device=device))
-			loss.backward()
-			optimizer.step()
-
-		metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
-		tune.report(val_bacc=metrics["bacc"], val_accuracy=metrics["accuracy"],
-					val_auc=metrics["auc"], val_macro_f1=metrics["macro_f1"],
-					training_iteration=epoch)
-		if metrics["bacc"] > best_val_bacc + 1e-6:
-			best_val_bacc = metrics["bacc"]
-			best_metrics = metrics
-			best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
-			no_improvement = 0
-		else:
-			no_improvement += 1
-		if no_improvement >= patience:
-			break
+	def mean_metric(name: str) -> float:
+		return float(np.mean([item[name] for item in fold_metrics]))
 
 	tune.report(
-		val_bacc=float(best_val_bacc),
-		val_accuracy=float(best_metrics.get("accuracy", np.nan)),
-		val_auc=float(best_metrics.get("auc", np.nan)),
-		val_macro_f1=float(best_metrics.get("macro_f1", np.nan)),
-		search_epochs=epoch,
-		search_seconds=time.perf_counter() - start,
-		fold=fold,
+		val_bacc=mean_metric("bacc"),
+		val_bacc_std=float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
+		val_accuracy=mean_metric("accuracy"), val_auc=mean_metric("auc"),
+		val_macro_f1=mean_metric("macro_f1"),
+		search_epochs=epoch, search_seconds=time.perf_counter() - start,
+		search_folds=json.dumps(folds),
 	)
 
 
@@ -259,14 +260,14 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 			f"{available_cpus} CPUs at {args.cpu_per_trial} CPU/trial)."
 		)
 	scheduler = ASHAScheduler(
-		metric="val_bacc", mode="max", max_t=args.epochs,
-		grace_period=args.grace_period, reduction_factor=2,
+		metric="val_bacc", mode="max", max_t=len(args.folds),
+		grace_period=min(args.grace_period, len(args.folds)), reduction_factor=2,
 	)
 	reporter = CLIReporter(metric_columns=["val_bacc", "val_accuracy", "val_auc", "val_macro_f1", "training_iteration"])
 	analysis = tune.run(
 		tune.with_parameters(
 			train_validation_trial,
-			root=str(args.root), embedding_model=EMBEDDING_MODEL, fold=args.fold,
+			root=str(args.root), embedding_model=EMBEDDING_MODEL, folds=args.folds,
 			seed=args.seed, max_epochs=args.epochs, patience=args.patience,
 		),
 		config=search_space(architecture),
@@ -288,12 +289,13 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 			"architecture": architecture,
 			"embedding_model": EMBEDDING_MODEL,
 			"val_bacc": result.get("val_bacc", np.nan),
+			"val_bacc_std": result.get("val_bacc_std", np.nan),
 			"val_accuracy": result.get("val_accuracy", np.nan),
 			"val_auc": result.get("val_auc", np.nan),
 			"val_macro_f1": result.get("val_macro_f1", np.nan),
 			"search_epochs": result.get("search_epochs", np.nan),
 			"search_seconds": result.get("search_seconds", np.nan),
-			"search_fold": args.fold,
+			"search_folds": json.dumps(args.folds),
 			"timestamp_utc": datetime.now(timezone.utc).isoformat(),
 			"params_json": json_config(trial.config),
 		}
