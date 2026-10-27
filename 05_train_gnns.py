@@ -25,7 +25,10 @@ RESULT_KEY = ["embedding_model", "graph_variant", "graph_model", "seed", "hidden
               "num_layers", "dropout", "learning_rate", "weight_decay"]
 parser = get_args_parser('config.yml')
 args, unknown = parser.parse_known_args()
-with open(args.config_path) as file:
+config_path = Path(args.config_path)
+if not config_path.exists():
+    config_path = Path(__file__).resolve().parent / config_path
+with config_path.open() as file:
     config = yaml.load(file, Loader=yaml.FullLoader)
 
 
@@ -93,7 +96,7 @@ class GraphMIL(nn.Module):
             elif self.gnn_type == 'fagcn':
                 if in_dim != out_dim:
                     raise ValueError("FAGCN requires a constant hidden dimension")
-                layer = pyg_nn.FAConv(out_dim, eps=0.1, dropout=gnn_dropout)
+                layer = pyg_nn.FACo2nv(out_dim, eps=0.1, dropout=gnn_dropout)
             elif self.gnn_type == 'gcnii':
                 if in_dim != out_dim:
                     raise ValueError("GCNII requires a constant hidden dimension across layers")
