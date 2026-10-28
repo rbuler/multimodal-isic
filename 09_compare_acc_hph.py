@@ -267,35 +267,44 @@ def correlation_analysis(performance: pd.DataFrame, gsrp: pd.DataFrame, config: 
     rows = []
     rng = np.random.default_rng(config.seed)
     for (architecture, num_layers), group in merged.groupby(["architecture", "num_layers"]):
-        for metric in PRIMARY_GSRPS:
-            property_column = f"mean_{metric}"
-            if property_column not in group:
-                continue
-            usable = group[[property_column, "delta_bacc"]].dropna()
-            if len(usable) < 4 or usable[property_column].nunique() < 2 or usable["delta_bacc"].nunique() < 2:
-                continue
-            rho, ci_low, ci_high = bootstrap_spearman(
-                usable[property_column].to_numpy(), usable["delta_bacc"].to_numpy(), rng, config.bootstrap_iterations
-            )
-            p_value = float(spearmanr(usable[property_column], usable["delta_bacc"]).pvalue)
-            rows.append({
-                "analysis": "exploratory_gsrp_delta_bacc_correlation",
-                "architecture": architecture,
-                "num_layers": num_layers,
-                "gsrp": metric,
-                "gsrp_name": GSRP_LABELS.get(metric, metric),
-                "n_graph_variants": len(usable),
-                "n_pairs": int(group["n_pairs"].sum()),
-                "rho_spearman": rho,
-                "ci_low": ci_low,
-                "ci_high": ci_high,
-                "p_value": p_value,
-                "unit_of_analysis": "distinct graph variants; fold- and seed-matched GNN-minus-MLP test BAcc aggregated per graph variant",
-            })
+        for scope, family in [("pooled", "all"), ("within_family", "grid"),
+                              ("within_family", "knn"), ("within_family", "random")]:
+            scoped_group = group if scope == "pooled" else group[group["graph_family"].eq(family)]
+            for metric in PRIMARY_GSRPS:
+                property_column = f"mean_{metric}"
+                if property_column not in scoped_group:
+                    continue
+                usable = scoped_group[[property_column, "delta_bacc"]].dropna()
+                if len(usable) < 4 or usable[property_column].nunique() < 2 or usable["delta_bacc"].nunique() < 2:
+                    continue
+                rho, ci_low, ci_high = bootstrap_spearman(
+                    usable[property_column].to_numpy(), usable["delta_bacc"].to_numpy(), rng, config.bootstrap_iterations
+                )
+                p_value = float(spearmanr(usable[property_column], usable["delta_bacc"]).pvalue)
+                rows.append({
+                    "analysis": "exploratory_gsrp_delta_bacc_correlation",
+                    "architecture": architecture,
+                    "num_layers": num_layers,
+                    "scope": scope,
+                    "graph_family": family,
+                    "gsrp": metric,
+                    "gsrp_name": GSRP_LABELS.get(metric, metric),
+                    "n_graph_variants": len(usable),
+                    "n_pairs": int(scoped_group["n_pairs"].sum()),
+                    "n_folds": int(performance["fold"].nunique()),
+                    "n_seeds": int(performance["seed"].nunique()),
+                    "mean_delta_bacc_sd": float(scoped_group["delta_bacc_std"].mean()),
+                    "rho_spearman": rho,
+                    "ci_low": ci_low,
+                    "ci_high": ci_high,
+                    "p_value": p_value,
+                    "unit_of_analysis": "distinct graph variants; fold- and seed-matched GNN-minus-MLP test BAcc aggregated per graph variant",
+                    "note": "Pooled results may reflect differences between graph families; within-family results are exploratory. Grid is omitted when fewer than four variants are available.",
+                })
     results = pd.DataFrame(rows)
     if results.empty:
         return results
-    results["p_fdr_bh"] = benjamini_hochberg(results["p_value"])
+    results["p_fdr_bh"] = results.groupby("scope")["p_value"].transform(benjamini_hochberg)
     results["interpretation"] = np.select(
         [results["rho_spearman"] > 0.3, results["rho_spearman"] < -0.3],
         ["positive association", "negative association"],
@@ -307,7 +316,7 @@ def correlation_analysis(performance: pd.DataFrame, gsrp: pd.DataFrame, config: 
 def make_correlation_heatmap(correlations: pd.DataFrame, config: Config) -> None:
     if correlations.empty:
         return
-    heatmap = correlations.pivot_table(
+    heatmap = correlations[correlations["scope"].eq("pooled")].pivot_table(
         index="gsrp_name", columns=["architecture", "num_layers"], values="rho_spearman"
     )
     architecture_order = ["gin", "gcn", "gcnii", "fagcn", "gat", "gatv2", "graphsage", "transformer"]
