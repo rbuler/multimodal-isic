@@ -263,7 +263,15 @@ def correlation_analysis(performance: pd.DataFrame, gsrp: pd.DataFrame, config: 
         )
         .merge(variant_metadata(paired["graph_variant"]), on="graph_variant", how="left")
     )
-    merged = advantage.merge(gsrp, on="graph_variant", how="inner")
+    gsrp_columns = ["graph_variant"] + [
+        f"mean_{metric}" for metric in PRIMARY_GSRPS
+        if f"mean_{metric}" in gsrp.columns
+    ]
+    merged = advantage.merge(
+        gsrp[gsrp_columns],
+        on="graph_variant",
+        how="inner",
+    )
     rows = []
     rng = np.random.default_rng(config.seed)
     for (architecture, num_layers), group in merged.groupby(["architecture", "num_layers"]):
