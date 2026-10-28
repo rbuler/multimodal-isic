@@ -55,7 +55,7 @@ def load_training_helpers():
 def parser() -> argparse.Namespace:
 	arg_parser = argparse.ArgumentParser(description=__doc__)
 	arg_parser.add_argument("--architecture", choices=("all",) + ARCHITECTURES, default="all")
-	arg_parser.add_argument("--num-samples", type=int, default=500)
+	arg_parser.add_argument("--num-samples", type=int, default=100)
 	arg_parser.add_argument("--max-concurrent", type=int, default=None)
 	arg_parser.add_argument("--gpu-per-trial", type=float, default=.25)
 	arg_parser.add_argument("--cpu-per-trial", type=float, default=8.0)
@@ -165,23 +165,25 @@ def train_validation_trial(
 			
 		fold_metrics.append(helpers.evaluate(model, val_records, criterion, device, num_classes))
 		mean_bacc = float(np.mean([item["bacc"] for item in fold_metrics]))
-		tune.report(
-			val_bacc=mean_bacc,
-			val_bacc_std=float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
-			training_iteration=fold_index,
-		)
+		tune.report({
+			"val_bacc": mean_bacc,
+			"val_bacc_std": float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
+			"training_iteration": fold_index,
+		})
 
 	def mean_metric(name: str) -> float:
 		return float(np.mean([item[name] for item in fold_metrics]))
 
-	tune.report(
-		val_bacc=mean_metric("bacc"),
-		val_bacc_std=float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
-		val_accuracy=mean_metric("accuracy"), val_auc=mean_metric("auc"),
-		val_macro_f1=mean_metric("macro_f1"),
-		search_epochs=epoch, search_seconds=time.perf_counter() - start,
-		search_folds=json.dumps(folds),
-	)
+	tune.report({
+		"val_bacc": mean_metric("bacc"),
+		"val_bacc_std": float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
+		"val_accuracy": mean_metric("accuracy"),
+		"val_auc": mean_metric("auc"),
+		"val_macro_f1": mean_metric("macro_f1"),
+		"search_epochs": epoch,
+		"search_seconds": time.perf_counter() - start,
+		"search_folds": json.dumps(folds),
+	})
 
 
 def json_config(config: dict[str, Any]) -> str:
