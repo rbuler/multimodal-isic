@@ -1,7 +1,7 @@
 """Ray Tune search for graph-MIL hyperparameters.
 
 Each invocation adds new train/validation-only trials to a shared history and
-refreshes the best five configurations for every architecture. The Tune stage
+refreshes the best ten configurations for every architecture. The Tune stage
 uses epoch-level ASHA pruning on one screening fold. Test data is never loaded
 by either stage; confirmation evaluates retained candidates across all validation folds.
 """
@@ -37,8 +37,8 @@ GRAPH_VARIANTS = (
 )
 RESULTS_DIR = ROOT / "gnn_results_raytune"
 TRIALS_PATH = RESULTS_DIR / "hparam_search_trials.csv"
-TOP5_PATH = RESULTS_DIR / "hparam_search_top5_per_execution.csv"
-GLOBAL_TOP5_PATH = RESULTS_DIR / "hparam_search_global_top5.csv"
+TOP10_PATH = RESULTS_DIR / "hparam_search_top10_per_execution.csv"
+GLOBAL_TOP10_PATH = RESULTS_DIR / "hparam_search_global_top10.csv"
 CONFIRMATION_PATH = RESULTS_DIR / "hparam_search_five_fold_confirmation.csv"
 
 
@@ -67,7 +67,7 @@ def parser() -> argparse.Namespace:
 	arg_parser.add_argument("--patience", type=int, default=16)
 	arg_parser.add_argument("--grace-period", type=int, default=10)
 	arg_parser.add_argument("--root", type=Path, default=ROOT)
-	arg_parser.add_argument("--candidates", type=Path, default=GLOBAL_TOP5_PATH)
+	arg_parser.add_argument("--candidates", type=Path, default=GLOBAL_TOP10_PATH)
 	arg_parser.add_argument("--output", type=Path, default=CONFIRMATION_PATH)
 	return arg_parser.parse_args()
 
@@ -193,7 +193,7 @@ def json_config(config: dict[str, Any]) -> str:
 	return json.dumps(config, sort_keys=True, separators=(",", ":"))
 
 
-def append_and_refresh_top5(rows: list[dict[str, Any]], execution_id: str) -> None:
+def append_and_refresh_top10(rows: list[dict[str, Any]], execution_id: str) -> None:
 	RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 	new_frame = pd.DataFrame(rows)
 	if new_frame.empty:
@@ -213,30 +213,30 @@ def append_and_refresh_top5(rows: list[dict[str, Any]], execution_id: str) -> No
 	frame = frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
 	frame.to_csv(TRIALS_PATH, index=False)
 
-	top5_per_execution = (
+	top10_per_execution = (
 		frame.sort_values(
 			["execution_id", "architecture", "val_bacc"],
 			ascending=[True, True, False],
 		)
 		.groupby(["execution_id", "architecture"], as_index=False, group_keys=False)
-		.head(5)
+		.head(10)
 		.copy()
 	)
-	top5_per_execution["search_rank"] = top5_per_execution.groupby(
+	top10_per_execution["search_rank"] = top10_per_execution.groupby(
 		["execution_id", "architecture"]
 	)["val_bacc"].rank(method="first", ascending=False).astype(int)
-	top5_per_execution.to_csv(TOP5_PATH, index=False)
+	top10_per_execution.to_csv(TOP10_PATH, index=False)
 
-	global_top5 = (
+	global_top10 = (
 		frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
 		.groupby("architecture", as_index=False, group_keys=False)
-		.head(5)
+		.head(10)
 		.reset_index(drop=True)
 	)
-	global_top5.to_csv(GLOBAL_TOP5_PATH, index=False)
+	global_top10.to_csv(GLOBAL_TOP10_PATH, index=False)
 	print(f"Saved {len(frame)} trial rows to {TRIALS_PATH}")
-	print(f"Saved {len(top5_per_execution)} per-execution candidates to {TOP5_PATH}")
-	print(f"Saved {len(global_top5)} global top-five rows to {GLOBAL_TOP5_PATH}")
+	print(f"Saved {len(top10_per_execution)} per-execution candidates to {TOP10_PATH}")
+	print(f"Saved {len(global_top10)} global top-ten rows to {GLOBAL_TOP10_PATH}")
 
 
 def run_architecture(architecture: str, args: argparse.Namespace, execution_id: str) -> list[dict[str, Any]]:
@@ -409,7 +409,7 @@ def main() -> None:
 	for architecture in architectures:
 		print(f"\n=== Searching {architecture} ({args.num_samples} new trials) ===")
 		rows = run_architecture(architecture, args, execution_id)
-		append_and_refresh_top5(rows, execution_id)
+		append_and_refresh_top10(rows, execution_id)
 		all_rows.extend(rows)
 	print(f"Completed {len(all_rows)} new trials across {len(architectures)} architectures.")
 
