@@ -9,6 +9,7 @@ by either stage; confirmation evaluates retained candidates across all validatio
 from __future__ import annotations
 
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -57,7 +58,7 @@ def parser() -> argparse.Namespace:
 	arg_parser = argparse.ArgumentParser(description=__doc__)
 	arg_parser.add_argument("--mode", choices=("search", "confirm"), default="search")
 	arg_parser.add_argument("--architecture", choices=("all",) + ARCHITECTURES, default="all")
-	arg_parser.add_argument("--num-samples", type=int, default=100)
+	arg_parser.add_argument("--num-samples", type=int, default=200)
 	arg_parser.add_argument("--max-concurrent", type=int, default=None)
 	arg_parser.add_argument("--gpu-per-trial", type=float, default=.25)
 	arg_parser.add_argument("--cpu-per-trial", type=float, default=8.0)
@@ -200,40 +201,44 @@ def append_and_refresh_top10(rows: list[dict[str, Any]], execution_id: str) -> N
 		return
 	new_frame["execution_id"] = execution_id
 	new_frame["candidate_id"] = new_frame["execution_id"] + "_" + new_frame["trial_id"].astype(str)
-	if TRIALS_PATH.exists():
-		old_frame = pd.read_csv(TRIALS_PATH)
-		if "execution_id" not in old_frame:
-			old_frame["execution_id"] = "legacy"
-		if "candidate_id" not in old_frame:
-			old_frame["candidate_id"] = "legacy_" + old_frame["trial_id"].astype(str)
-		frame = pd.concat([old_frame, new_frame], ignore_index=True)
-		frame = frame.drop_duplicates(subset=["candidate_id"], keep="last")
-	else:
-		frame = new_frame
-	frame = frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
-	frame.to_csv(TRIALS_PATH, index=False)
+	lock_path = RESULTS_DIR / "hparam_search_results.lock"
+	with lock_path.open("w") as lock_handle:
+		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+		if TRIALS_PATH.exists():
+			old_frame = pd.read_csv(TRIALS_PATH)
+			if "execution_id" not in old_frame:
+				old_frame["execution_id"] = "legacy"
+			if "candidate_id" not in old_frame:
+				old_frame["candidate_id"] = "legacy_" + old_frame["trial_id"].astype(str)
+			frame = pd.concat([old_frame, new_frame], ignore_index=True)
+			frame = frame.drop_duplicates(subset=["candidate_id"], keep="last")
+		else:
+			frame = new_frame
+		frame = frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
+		frame.to_csv(TRIALS_PATH, index=False)
 
-	top10_per_execution = (
-		frame.sort_values(
-			["execution_id", "architecture", "val_bacc"],
-			ascending=[True, True, False],
+		top10_per_execution = (
+			frame.sort_values(
+				["execution_id", "architecture", "val_bacc"],
+				ascending=[True, True, False],
+			)
+			.groupby(["execution_id", "architecture"], as_index=False, group_keys=False)
+			.head(10)
+			.copy()
 		)
-		.groupby(["execution_id", "architecture"], as_index=False, group_keys=False)
-		.head(10)
-		.copy()
-	)
-	top10_per_execution["search_rank"] = top10_per_execution.groupby(
-		["execution_id", "architecture"]
-	)["val_bacc"].rank(method="first", ascending=False).astype(int)
-	top10_per_execution.to_csv(TOP10_PATH, index=False)
+		top10_per_execution["search_rank"] = top10_per_execution.groupby(
+			["execution_id", "architecture"]
+		)["val_bacc"].rank(method="first", ascending=False).astype(int)
+		top10_per_execution.to_csv(TOP10_PATH, index=False)
 
-	global_top10 = (
-		frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
-		.groupby("architecture", as_index=False, group_keys=False)
-		.head(10)
-		.reset_index(drop=True)
-	)
-	global_top10.to_csv(GLOBAL_TOP10_PATH, index=False)
+		global_top10 = (
+			frame.sort_values(["architecture", "val_bacc"], ascending=[True, False])
+			.groupby("architecture", as_index=False, group_keys=False)
+			.head(10)
+			.reset_index(drop=True)
+		)
+		global_top10.to_csv(GLOBAL_TOP10_PATH, index=False)
+		fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 	print(f"Saved {len(frame)} trial rows to {TRIALS_PATH}")
 	print(f"Saved {len(top10_per_execution)} per-execution candidates to {TOP10_PATH}")
 	print(f"Saved {len(global_top10)} global top-ten rows to {GLOBAL_TOP10_PATH}")
@@ -280,7 +285,7 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 		scheduler=scheduler,
 		progress_reporter=reporter,
 		storage_path=str(storage_path),
-		name=f"hparam_search_{architecture}_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}",
+		name=f"hparam_search_{architecture}_{execution_id}",
 		verbose=1,
 	)
 	rows = []
@@ -403,7 +408,8 @@ def main() -> None:
 		confirm_candidates(args)
 		return
 	architectures = ARCHITECTURES if args.architecture == "all" else (args.architecture,)
-	execution_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+	job_id = os.environ.get("SLURM_JOB_ID", "local")
+	execution_id = f"{job_id}_{os.getpid()}_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
 	all_rows = []
 	
 	for architecture in architectures:
