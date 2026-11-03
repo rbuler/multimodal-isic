@@ -90,16 +90,31 @@ def search_space(architecture: str) -> dict[str, Any]:
 		"lr": tune.loguniform(1e-6, 1e-3),
 		"weight_decay": tune.loguniform(1e-8, 1e-3),
 	}
-	if architecture != "mlp":
+	if architecture == "mlp":
+		space["graph_variant"] = tune.choice(["none"])
+		space["gnn_heads"] = tune.choice([1])
+		space["gnn_concat"] = tune.choice([False])
+	else:
+		space["graph_variant"] = tune.choice(GRAPH_VARIANTS)
+
+	if architecture in {"gat", "gatv2", "transformer"}:
 		space.update({
-			"graph_variant": tune.choice(GRAPH_VARIANTS),
 			"gnn_heads": tune.choice([1, 2, 4, 8]),
 			"gnn_concat": tune.choice([True, False]),
 		})
 	else:
-		space["graph_variant"] = tune.choice(["none"])
 		space["gnn_heads"] = tune.choice([1])
 		space["gnn_concat"] = tune.choice([False])
+
+	if architecture == "gin":
+		space["gin_train_eps"] = tune.choice([True, False])
+	elif architecture == "fagcn":
+		space["fagcn_eps"] = tune.choice([0.05, 0.1, 0.2, 0.5])
+	elif architecture == "gcnii":
+		space.update({
+			"gcnii_alpha": tune.choice([0.05, 0.1, 0.2, 0.5]),
+			"gcnii_theta": tune.choice([0.5, 1.0, 1.5, 2.0]),
+		})
 	return space
 
 
@@ -128,6 +143,10 @@ def train_validation_trial(
 			gnn_hidden=config["hidden_dim"], gnn_layers=config["num_layers"],
 			gnn_dropout=config["dropout"], gnn_heads=config["gnn_heads"],
 			gnn_concat=config["gnn_concat"], att_dim=config["att_dim"],
+			gcnii_alpha=config.get("gcnii_alpha", 0.1),
+			gcnii_theta=config.get("gcnii_theta", 0.5),
+			fagcn_eps=config.get("fagcn_eps", 0.1),
+			gin_train_eps=config.get("gin_train_eps", True),
 			att_heads=config["att_heads"], pool_dropout=config["pool_dropout"],
 			classifier_dim=config["classifier_dim"], classifier_light=config["classifier_light"],
 			num_classes=num_classes, use_residual=config["use_residual"],
@@ -329,6 +348,10 @@ def confirm_candidate(
 		gnn_hidden=int(params["hidden_dim"]), gnn_layers=int(params["num_layers"]),
 		gnn_dropout=float(params["dropout"]), gnn_heads=int(params["gnn_heads"]),
 		gnn_concat=bool(params["gnn_concat"]), att_dim=int(params["att_dim"]),
+		gcnii_alpha=float(params.get("gcnii_alpha", 0.1)),
+		gcnii_theta=float(params.get("gcnii_theta", 0.5)),
+		fagcn_eps=float(params.get("fagcn_eps", 0.1)),
+		gin_train_eps=bool(params.get("gin_train_eps", True)),
 		att_heads=int(params["att_heads"]), pool_dropout=float(params["pool_dropout"]),
 		classifier_dim=int(params["classifier_dim"]), classifier_light=bool(params["classifier_light"]),
 		num_classes=num_classes, use_residual=bool(params["use_residual"]),
