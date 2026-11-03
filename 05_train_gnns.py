@@ -96,7 +96,7 @@ class GraphMIL(nn.Module):
             elif self.gnn_type == 'fagcn':
                 if in_dim != out_dim:
                     raise ValueError("FAGCN requires a constant hidden dimension")
-                layer = pyg_nn.FACo2nv(out_dim, eps=0.1, dropout=gnn_dropout)
+                layer = pyg_nn.FAConv(out_dim, eps=0.1, dropout=gnn_dropout)
             elif self.gnn_type == 'gcnii':
                 if in_dim != out_dim:
                     raise ValueError("GCNII requires a constant hidden dimension across layers")
