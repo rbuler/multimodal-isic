@@ -18,3 +18,4 @@ mil_results/*.yml
 wandb/*
 /figures
 /gnn_results
+/gnn_results_raytune
