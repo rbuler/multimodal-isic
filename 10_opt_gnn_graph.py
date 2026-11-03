@@ -58,7 +58,7 @@ def parser() -> argparse.Namespace:
 	arg_parser = argparse.ArgumentParser(description=__doc__)
 	arg_parser.add_argument("--mode", choices=("search", "confirm"), default="search")
 	arg_parser.add_argument("--architecture", choices=("all",) + ARCHITECTURES, default="all")
-	arg_parser.add_argument("--num-samples", type=int, default=200)
+	arg_parser.add_argument("--num-samples", type=int, default=1000)
 	arg_parser.add_argument("--max-concurrent", type=int, default=None)
 	arg_parser.add_argument("--gpu-per-trial", type=float, default=.25)
 	arg_parser.add_argument("--cpu-per-trial", type=float, default=8.0)
