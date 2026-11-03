@@ -45,6 +45,7 @@ class GraphMIL(nn.Module):
     def __init__(self, input_dim=768, gnn_type='gat', gnn_hidden=256, 
                  gnn_layers=2, gnn_dropout=0.1, gnn_heads=4,
                  gnn_concat=True, gcnii_alpha=0.1, gcnii_theta=0.5,
+                 fagcn_eps=0.1, gin_train_eps=True,
                  att_dim=128, att_heads=4, pool_dropout=0.2, 
                  classifier_dim=128, classifier_light=False, num_classes=7,
                  use_residual=True, use_layer_norm=True):
@@ -83,7 +84,7 @@ class GraphMIL(nn.Module):
                 mlp = nn.Sequential(
                     nn.Linear(in_dim, out_dim), nn.ReLU(), nn.Linear(out_dim, out_dim)
                 )
-                layer = pyg_nn.GINConv(mlp, train_eps=True)
+                layer = pyg_nn.GINConv(mlp, train_eps=gin_train_eps)
             elif self.gnn_type == 'transformer':
                 layer = pyg_nn.TransformerConv(in_dim, out_dim, heads=self.gnn_heads,
                                                concat=self.gnn_concat, dropout=gnn_dropout,
@@ -96,7 +97,7 @@ class GraphMIL(nn.Module):
             elif self.gnn_type == 'fagcn':
                 if in_dim != out_dim:
                     raise ValueError("FAGCN requires a constant hidden dimension")
-                layer = pyg_nn.FAConv(out_dim, eps=0.1, dropout=gnn_dropout)
+                layer = pyg_nn.FAConv(out_dim, eps=fagcn_eps, dropout=gnn_dropout)
             elif self.gnn_type == 'gcnii':
                 if in_dim != out_dim:
                     raise ValueError("GCNII requires a constant hidden dimension across layers")
