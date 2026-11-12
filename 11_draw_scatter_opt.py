@@ -1,9 +1,8 @@
-from pathlib import Path
-
-import matplotlib as mpl
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import matplotlib
+import matplotlib.pyplot as plt
+from pathlib import Path
 
 
 ARCHITECTURE_ORDER = [
@@ -46,10 +45,8 @@ def prepare_data(df: pd.DataFrame) -> pd.DataFrame:
 
     data["val_bacc_std"] = pd.to_numeric(data["val_bacc_std"], errors="coerce")
 
-    # Remove rows with missing architecture or metric values.
     data = data.dropna(subset=["architecture", "val_bacc_mean"]).copy()
 
-    # Keep architecture order explicit and deterministic.
     data["architecture"] = pd.Categorical(data["architecture"], categories=ARCHITECTURE_ORDER, ordered=True)
     data = data.sort_values(["architecture", "val_bacc_mean"], ascending=[True, False], na_position="last")
     return data
@@ -80,7 +77,7 @@ def top10_trials_per_architecture(data: pd.DataFrame, top_n: int = 10) -> pd.Dat
 
 def configure_style() -> None:
     """Apply a clean scientific publication style to Matplotlib."""
-    mpl.rcParams.update({
+    matplotlib.rcParams.update({
         "font.size": 11,
         "axes.titlesize": 12,
         "axes.labelsize": 11,
@@ -192,7 +189,6 @@ def plot_top10_per_architecture(top10: pd.DataFrame, best: pd.DataFrame, output_
     ax.set_xlabel("Architecture")
     ax.set_title("Top 10 configurations per architecture")
 
-    # Keep the same architecture ordering and a tight but readable y-axis range across all points.
     ymin = min(top10["val_bacc_mean"].min(), best["val_bacc_mean"].min()) - 0.05
     ymax = max(top10["val_bacc_mean"].max(), best["val_bacc_mean"].max()) + 0.05
     ax.set_ylim(ymin, ymax)
