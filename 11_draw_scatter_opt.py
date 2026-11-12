@@ -197,7 +197,6 @@ def plot_top10_per_architecture(top10: pd.DataFrame, best: pd.DataFrame, output_
 
     output_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_dir / "top10_by_architecture.png", dpi=300, bbox_inches="tight")
-    fig.savefig(output_dir / "top10_by_architecture.pdf", bbox_inches="tight")
     return fig, ax
 
 
@@ -221,6 +220,6 @@ if __name__ == "__main__":
 
     csv_path = Path("gnn_results_raytune/hparam_search_global_top10.csv")
     df_trials = pd.read_csv(csv_path)
-    # fig_best, fig_top10 = generate_figures(df_trials, output_dir="figures")
-    _, fig_top10 = generate_figures(df_trials, output_dir="figures")
+    # fig_best, fig_top10 = generate_figures(df_trials, output_dir="figures/ray_tune_perf")
+    _, fig_top10 = generate_figures(df_trials, output_dir="figures/ray_tune_perf")
     plt.show()
