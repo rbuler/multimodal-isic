@@ -14,12 +14,14 @@ import importlib.util
 import json
 import os
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.data import WeightedRandomSampler
 from ray import tune
 from ray.tune import CLIReporter
 
@@ -100,14 +102,24 @@ def train_and_test_candidate(
 			weight_decay=float(params["weight_decay"]),
 		)
 		criterion = torch.nn.CrossEntropyLoss()
-		rng = np.random.default_rng(seed + fold)
+		labels = np.array([record["y"] for record in train_records])
+		class_counts = Counter(labels)
+		sample_weights = np.array(
+			[1.0 / class_counts[int(label)] for label in labels],
+			dtype=np.float64,
+		)
+		sampler = WeightedRandomSampler(
+			weights=torch.from_numpy(sample_weights),
+			num_samples=len(sample_weights),
+			replacement=True,
+		)
 		best_state = None
 		best_bacc = -np.inf
 		no_improvement = 0
 
 		for _epoch in range(1, max_epochs + 1):
 			model.train()
-			for index in rng.integers(0, len(train_records), len(train_records)):
+			for index in sampler:
 				record = train_records[int(index)]
 				optimizer.zero_grad()
 				edge_index = record["edge_index"]
@@ -143,7 +155,6 @@ def train_and_test_candidate(
 			"test_accuracy": float(test_metrics["accuracy"]),
 		})
 
-		# Release fold-local tensors before the next fold in this Ray worker.
 		del model, optimizer
 		if torch.cuda.is_available():
 			torch.cuda.empty_cache()
@@ -195,7 +206,6 @@ def main() -> None:
 	if not args.folds:
 		raise ValueError("At least one fold is required")
 
-	# Preserve the source row identity while passing the parsed JSON as Ray config.
 	configs = []
 	for _, candidate in candidates.iterrows():
 		params = json.loads(candidate["params_json"])
