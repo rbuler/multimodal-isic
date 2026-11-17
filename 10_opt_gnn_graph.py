@@ -14,6 +14,7 @@ import importlib.util
 import json
 import os
 import time
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import torch
+from torch.utils.data import WeightedRandomSampler
 from ray import tune
 from ray.tune import CLIReporter
 from ray.tune.schedulers import ASHAScheduler
@@ -156,15 +158,25 @@ def train_validation_trial(
 		optimizer_class = torch.optim.Adam if config["optimizer"] == "adam" else torch.optim.AdamW
 		optimizer = optimizer_class(model.parameters(), lr=config["lr"], weight_decay=config["weight_decay"])
 		criterion = torch.nn.CrossEntropyLoss()
-		rng = np.random.default_rng(seed + fold)
+		labels = np.array([record["y"] for record in train_records])
+		class_counts = Counter(labels)
+		sample_weights = np.array(
+			[1.0 / class_counts[int(label)] for label in labels],
+			dtype=np.float64,
+		)
+		sampler = WeightedRandomSampler(
+			weights=torch.from_numpy(sample_weights),
+			num_samples=len(sample_weights),
+			replacement=True,
+		)
 		best_state = None
-		best_fold_bacc = -np.inf
+		best_fold_loss = np.inf
 		no_improvement = 0
 		
 		for epoch in range(1, max_epochs + 1):
 			model.train()
 			
-			for index in rng.integers(0, len(train_records), len(train_records)):
+			for index in sampler:
 				record = train_records[int(index)]
 				optimizer.zero_grad()
 				edge_index = None if record["edge_index"] is None else torch.from_numpy(record["edge_index"]).to(device)
@@ -175,14 +187,15 @@ def train_validation_trial(
 				
 			metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
 			
-			if metrics["bacc"] > best_fold_bacc + 1e-6:
-				best_fold_bacc = metrics["bacc"]
+			if metrics["loss"] < best_fold_loss - 1e-6:
+				best_fold_loss = metrics["loss"]
 				best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 				no_improvement = 0
 			else:
 				no_improvement += 1
 			tune.report({
 				"val_bacc": float(metrics["bacc"]),
+				"val_loss": float(metrics["loss"]),
 				"training_iteration": epoch,
 				"fold": fold,
 			})
@@ -286,11 +299,11 @@ def run_architecture(architecture: str, args: argparse.Namespace, execution_id: 
 		)
 		
 	scheduler = ASHAScheduler(
-		metric="val_bacc", mode="max", max_t=args.epochs,
+		metric="val_loss", mode="min", max_t=args.epochs,
 		grace_period=min(args.grace_period, args.epochs), reduction_factor=2,
 	)
 	
-	reporter = CLIReporter(metric_columns=["val_bacc", "val_accuracy", "val_auc", "val_macro_f1", "training_iteration"])
+	reporter = CLIReporter(metric_columns=["val_loss", "val_bacc", "val_accuracy", "val_auc", "val_macro_f1", "training_iteration"])
 	analysis = tune.run(
 		tune.with_parameters(
 			train_validation_trial,
@@ -360,13 +373,23 @@ def confirm_candidate(
 	optimizer_class = torch.optim.Adam if params["optimizer"] == "adam" else torch.optim.AdamW
 	optimizer = optimizer_class(model.parameters(), lr=float(params["lr"]), weight_decay=float(params["weight_decay"]))
 	criterion = torch.nn.CrossEntropyLoss()
-	rng = np.random.default_rng(seed + fold)
+	labels = np.array([record["y"] for record in train_records])
+	class_counts = Counter(labels)
+	sample_weights = np.array(
+		[1.0 / class_counts[int(label)] for label in labels],
+		dtype=np.float64,
+	)
+	sampler = WeightedRandomSampler(
+		weights=torch.from_numpy(sample_weights),
+		num_samples=len(sample_weights),
+		replacement=True,
+	)
 	best_state = None
-	best_bacc = -np.inf
+	best_loss = np.inf
 	no_improvement = 0
 	for _epoch in range(1, max_epochs + 1):
 		model.train()
-		for index in rng.integers(0, len(train_records), len(train_records)):
+		for index in sampler:
 			record = train_records[int(index)]
 			optimizer.zero_grad()
 			edge_index = None if record["edge_index"] is None else torch.from_numpy(record["edge_index"]).to(device)
@@ -375,8 +398,8 @@ def confirm_candidate(
 			loss.backward()
 			optimizer.step()
 		metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
-		if metrics["bacc"] > best_bacc + 1e-6:
-			best_bacc = metrics["bacc"]
+		if metrics["loss"] < best_loss - 1e-6:
+			best_loss = metrics["loss"]
 			best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
 			no_improvement = 0
 		else:
