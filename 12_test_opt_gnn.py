@@ -114,7 +114,7 @@ def train_and_test_candidate(
 			replacement=True,
 		)
 		best_state = None
-		best_bacc = -np.inf
+		best_loss = np.inf
 		no_improvement = 0
 
 		for _epoch in range(1, max_epochs + 1):
@@ -133,8 +133,8 @@ def train_and_test_candidate(
 				optimizer.step()
 
 			val_metrics = helpers.evaluate(model, val_records, criterion, device, num_classes)
-			if val_metrics["bacc"] > best_bacc + 1e-6:
-				best_bacc = val_metrics["bacc"]
+			if val_metrics["loss"] < best_loss - 1e-6:
+				best_loss = val_metrics["loss"]
 				best_state = {
 					key: value.detach().cpu().clone()
 					for key, value in model.state_dict().items()
