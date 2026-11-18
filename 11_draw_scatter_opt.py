@@ -109,60 +109,6 @@ def configure_style() -> None:
     })
 
 
-def plot_best_by_architecture(best: pd.DataFrame, output_dir: Path) -> tuple[plt.Figure, plt.Axes]:
-    """Create a dot plot with error bars showing the best trial for each architecture."""
-    fig, ax = plt.subplots(figsize=(8.5, 5.5))
-
-    x_positions = np.arange(len(best))
-    y = best["val_bacc_mean"].to_numpy()
-    yerr = best["val_bacc_std"].fillna(0.0).to_numpy()
-
-    ax.errorbar(
-        x_positions,
-        y,
-        yerr=yerr,
-        fmt="o",
-        ms=7,
-        mfc="tab:blue",
-        mec="black",
-        mew=0.5,
-        ecolor="tab:blue",
-        elinewidth=1.2,
-        capsize=4,
-        capthick=1.2,
-        linestyle="none",
-        zorder=3,
-    )
-
-    for i, value in enumerate(y):
-        ax.text(
-            i,
-            value + 0.005,
-            f"{value:.3f}",
-            ha="center",
-            va="bottom",
-            fontsize=8,
-            color="black",
-        )
-
-    ax.set_xticks(x_positions)
-    ax.set_xticklabels(best["architecture"], rotation=45, ha="right")
-    ax.set_ylabel("Best validation BACC")
-    ax.set_xlabel("Architecture")
-    ax.set_title("Best-performing configuration per architecture")
-
-    y_min = y.min() - 0.05
-    y_max = y.max() + 0.05
-    ax.set_ylim(y_min, y_max)
-    ax.grid(axis="y", linestyle="-", alpha=0.25)
-    fig.tight_layout()
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_dir / "best_by_architecture.png", dpi=300, bbox_inches="tight")
-    fig.savefig(output_dir / "best_by_architecture.pdf", bbox_inches="tight")
-    return fig, ax
-
-
 def plot_top10_per_architecture(
         validation: pd.DataFrame,
         validation_best: pd.DataFrame,
@@ -255,7 +201,6 @@ def generate_figures(
     test_top10 = top10_trials_per_architecture(test, top_n=10)
 
     output_path = Path(output_dir)
-    # fig_best, ax_best = plot_best_by_architecture(best, output_path)
     fig_top10, ax_top10 = plot_top10_per_architecture(
         validation_top10, validation_best, test_top10, test_best, output_path,
     )
@@ -270,7 +215,6 @@ if __name__ == "__main__":
     test_path = Path("gnn_results_raytune/test_hparam_search_global_top10.csv")
     validation_trials = pd.read_csv(validation_path)
     test_trials = pd.read_csv(test_path)
-    # fig_best, fig_top10 = generate_figures(df_trials, output_dir="figures/ray_tune_perf")
     _, fig_top10 = generate_figures(
         validation_trials, test_trials, output_dir="figures/ray_tune_perf",
     )
