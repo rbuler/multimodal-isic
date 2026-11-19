@@ -8,8 +8,12 @@ import time
 import uuid
 from pathlib import Path
 
-import albumentations as A
 import numpy as np
+
+if not hasattr(np, "float"):
+	np.float = float
+
+import albumentations as A
 import pandas as pd
 import torch
 import matplotlib.pyplot as plt
