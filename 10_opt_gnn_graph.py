@@ -211,6 +211,7 @@ def train_validation_trial(
 		return float(np.mean([item[name] for item in fold_metrics]))
 
 	tune.report({
+		"val_loss": mean_metric("loss"),
 		"val_bacc": mean_metric("bacc"),
 		"val_bacc_std": float(np.std([item["bacc"] for item in fold_metrics], ddof=0)),
 		"val_accuracy": mean_metric("accuracy"),
